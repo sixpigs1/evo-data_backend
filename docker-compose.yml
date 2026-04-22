@@ -22,7 +22,7 @@ services:
     command: celery -A app.worker.tasks worker --loglevel=info --concurrency=4
 
   db:
-    image: mysql:8.0
+    image: registry.cn-hangzhou.aliyuncs.com/library/mysql:8.0
     environment:
       MYSQL_DATABASE: evo_data
       MYSQL_USER: evodata
@@ -35,7 +35,7 @@ services:
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
 
   redis:
-    image: redis:7
+    image: redis:latest
     ports:
       - "6379:6379"
     volumes:
