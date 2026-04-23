@@ -109,43 +109,54 @@ def generate_sms_code(length: int = 6) -> str:
     return "".join(random.choices(string.digits, k=length))
 
 
-def send_sms_code(phone: str, code: str, scene: str = SMS_SCENE_LOGIN) -> bool:
+def send_sms_code(phone: str, scene: str = SMS_SCENE_LOGIN) -> Optional[str]:
     """
-    发送短信验证码。
+    通过阿里云号码认证服务（Dypnsapi）发送短信验证码。
+    验证码由阿里云生成，通过 ReturnVerifyCode=True 返回给后端存入 Redis。
     scene 决定使用哪个模板：
       - SMS_SCENE_LOGIN          → 模板 100001（登录/注册）
       - SMS_SCENE_CHANGE_PHONE   → 模板 100002（修改手机号）
       - SMS_SCENE_RESET_PASSWORD → 模板 100003（重置密码）
+    成功返回验证码字符串，失败返回 None。
     """
     template_code = _get_template_code(scene)
     expire_min = settings.SMS_CODE_EXPIRE_MINUTES
 
     if settings.SMS_DEV_MODE:
+        code = generate_sms_code(6)
         print(f"[DEV SMS] 手机号: {phone}  验证码: {code}  场景: {scene}  模板: {template_code}")
-        return True
+        return code
 
     try:
-        from alibabacloud_dysmsapi20170525.client import Client
-        from alibabacloud_tea_openapi import models as open_api_models
-        from alibabacloud_dysmsapi20170525 import models as sms_models
         import json
+        from alibabacloud_dypnsapi20170525.client import Client
+        from alibabacloud_dypnsapi20170525 import models as dypns_models
+        from alibabacloud_tea_openapi import models as open_api_models
 
         config = open_api_models.Config(
             access_key_id=settings.SMS_ACCESS_KEY_ID,
             access_key_secret=settings.SMS_ACCESS_KEY_SECRET,
         )
-        config.endpoint = "dysmsapi.aliyuncs.com"
+        config.endpoint = "dypnsapi.aliyuncs.com"
         client = Client(config)
 
-        template_param = json.dumps({"code": code, "min": str(expire_min)})
-        req = sms_models.SendSmsRequest(
-            phone_numbers=phone,
+        template_param = json.dumps({"code": "##code##", "min": str(expire_min)}, ensure_ascii=False)
+        req = dypns_models.SendSmsVerifyCodeRequest(
+            phone_number=phone,
             sign_name=settings.SMS_SIGN_NAME,
             template_code=template_code,
             template_param=template_param,
+            code_type=1,                    # 纯数字
+            code_length=6,
+            valid_time=expire_min * 60,     # 转换为秒
+            return_verify_code=True,        # 返回实际验证码
         )
-        resp = client.send_sms(req)
-        return resp.body.code == "OK"
+        resp = client.send_sms_verify_code(req)
+        if resp.body.code == "OK" and resp.body.model and resp.body.model.verify_code:
+            return resp.body.model.verify_code
+        else:
+            print(f"[SMS ERROR] code={resp.body.code} message={resp.body.message}")
+            return None
     except Exception as e:
         print(f"[SMS ERROR] {e}")
-        return False
+        return None

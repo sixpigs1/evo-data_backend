@@ -14,7 +14,6 @@ from app.auth.utils import (
     decode_token,
     generate_captcha_image,
     generate_captcha_text,
-    generate_sms_code,
     send_sms_code,
     verify_password,
     hash_password,
@@ -85,20 +84,21 @@ def send_sms(body: SendSmsRequest, request: Request):
     if count > settings.RATE_LIMIT_SMS:
         raise HTTPException(status_code=429, detail="短信发送过于频繁，请稍后再试")
 
-    # 生成并存储短信验证码
-    code = generate_sms_code(6)
-    expire = settings.SMS_CODE_EXPIRE_MINUTES * 60
-    r.setex(f"sms:{body.scene}:{body.phone}", expire, code)
-
     # 将 scene 字符串映射到 utils 常量
     scene_map = {
         "login": SMS_SCENE_LOGIN,
         "change_phone": SMS_SCENE_CHANGE_PHONE,
         "reset_password": SMS_SCENE_RESET_PASSWORD,
     }
-    ok = send_sms_code(body.phone, code, scene=scene_map.get(body.scene, SMS_SCENE_LOGIN))
-    if not ok:
+
+    # 调用号码认证服务发送短信，验证码由阿里云生成后返回
+    code = send_sms_code(body.phone, scene=scene_map.get(body.scene, SMS_SCENE_LOGIN))
+    if not code:
         raise HTTPException(status_code=500, detail="短信发送失败，请稍后重试")
+
+    # 将验证码存入 Redis 供后续校验
+    expire = settings.SMS_CODE_EXPIRE_MINUTES * 60
+    r.setex(f"sms:{body.scene}:{body.phone}", expire, code)
 
     return {"message": "验证码已发送"}
 

@@ -32,15 +32,16 @@ class Settings(BaseSettings):
     # Aliyun Region
     ALIYUN_REGION: str = "cn-hangzhou"
 
-    # SMS
+    # SMS（号码认证服务 Dypnsapi）
     SMS_ACCESS_KEY_ID: str = ""
     SMS_ACCESS_KEY_SECRET: str = ""
-    SMS_SIGN_NAME: str = "EvoData"
-    # 短信模板 Code（对应阿里云模板编号）
-    SMS_TEMPLATE_LOGIN: str = "100001"    # 登录/注册：验证码 ${code}，${min} 分钟有效
+    # 使用号码认证服务平台赠送签名，必须从控制台赠送签名列表中选择
+    SMS_SIGN_NAME: str = "速通互联验证码"
+    # 赠送模板 Code（与阿里云号码认证服务控制台模板 CODE 一致）
+    SMS_TEMPLATE_LOGIN: str = "100001"         # 登录/注册
     SMS_TEMPLATE_CHANGE_PHONE: str = "100002"  # 修改绑定手机号
     SMS_TEMPLATE_RESET_PASSWORD: str = "100003"  # 重置密码
-    SMS_CODE_EXPIRE_MINUTES: int = 10     # 短信验证码有效期（分钟），需与模板 ${min} 一致
+    SMS_CODE_EXPIRE_MINUTES: int = 5           # 有效期（分钟），需与模板 ${min} 保持一致
     SMS_DEV_MODE: bool = True
 
     # CORS
