@@ -117,8 +117,11 @@ def complete_upload(
     db.commit()
     db.refresh(upload)
 
-    # 触发异步校验任务
-    validate_dataset_task.delay(str(upload.id))
+    # 合并两类 tag
+    combined_tags = ",".join(filter(None, [body.robot_type_tags, body.task_type_tags])) or None
+
+    # 触发异步校验任务，传入描述和 tags
+    validate_dataset_task.delay(str(upload.id), body.description, combined_tags)
 
     return UploadStatusResponse(
         upload_id=str(upload.id),

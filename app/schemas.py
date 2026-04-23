@@ -144,6 +144,9 @@ class UploadCompleteRequest(BaseModel):
     upload_id: str
     dataset_name: str
     oss_path: str            # user_uploads/{user_id}/{upload_id}/
+    description: Optional[str] = None
+    robot_type_tags: Optional[str] = None   # 逗号分隔，如 "SO101,Piper"
+    task_type_tags: Optional[str] = None    # 逗号分隔，如 "家居操作,工业装配"
 
 
 class UploadStatusResponse(BaseModel):

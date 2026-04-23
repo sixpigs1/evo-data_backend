@@ -26,7 +26,7 @@ celery_app.conf.update(
 
 
 @celery_app.task(name="validate_dataset", bind=True, max_retries=3)
-def validate_dataset_task(self, upload_id: str):
+def validate_dataset_task(self, upload_id: str, description: str = None, tags: str = None):
     """异步校验上传的数据集格式"""
     from app.database import SessionLocal
     from app.datasets.validator import FormatVersion, validate_dataset
@@ -67,7 +67,8 @@ def validate_dataset_task(self, upload_id: str):
             dataset = Dataset(
                 owner_id=upload.user_id,
                 name=upload.dataset_name or f"dataset-{upload_id[:8]}",
-                description=info.get("description", ""),
+                description=description or info.get("description", ""),
+                tags=tags,
                 version=detected,
                 oss_path=upload.oss_path,
                 total_episodes=info.get("total_episodes"),
