@@ -174,9 +174,9 @@ def login_with_password(body: PasswordLoginRequest, db: Session = Depends(get_db
     r.delete(cap_key)
 
     user = db.query(User).filter(User.phone == body.phone).first()
-    if not user or not user.password_hash:
+    if not user or not user.hashed_password:
         raise HTTPException(status_code=400, detail="账号不存在或未设置密码")
-    if not verify_password(body.password, user.password_hash):
+    if not verify_password(body.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="密码错误")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="账号已被禁用")
@@ -206,7 +206,7 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    user.password_hash = hash_password(body.new_password)
+    user.hashed_password = hash_password(body.new_password)
     db.commit()
     r.delete(code_key)
     r.setex(f"sms_done:reset_password:{body.phone}", 120, "1")
