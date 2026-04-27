@@ -51,6 +51,8 @@ class SmsLoginRequest(BaseModel):
 class PasswordLoginRequest(BaseModel):
     phone: str
     password: str
+    captcha_id: str
+    captcha_text: str
 
     @field_validator("phone")
     @classmethod

@@ -165,6 +165,14 @@ def get_me(current_user: User = Depends(get_current_user)):
 @router.post("/login/password", response_model=TokenResponse)
 def login_with_password(body: PasswordLoginRequest, db: Session = Depends(get_db)):
     """手机号 + 密码登录（需提前通过短信设置密码）"""
+    r = get_redis()
+    # 校验图形验证码
+    cap_key = f"captcha:{body.captcha_id}"
+    stored_cap = r.get(cap_key)
+    if not stored_cap or stored_cap.upper() != body.captcha_text.upper():
+        raise HTTPException(status_code=400, detail="图形验证码错误或已过期")
+    r.delete(cap_key)
+
     user = db.query(User).filter(User.phone == body.phone).first()
     if not user or not user.password_hash:
         raise HTTPException(status_code=400, detail="账号不存在或未设置密码")
