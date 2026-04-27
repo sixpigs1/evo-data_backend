@@ -1,8 +1,9 @@
 """
 数据集 API 路由
 """
+import json
 import uuid
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ from app.schemas import (
     DatasetUpdateRequest,
     DownloadUrlRequest,
     DownloadUrlResponse,
+    TAG_CATEGORIES,
     UploadCompleteRequest,
     UploadStatusResponse,
 )
@@ -38,6 +40,25 @@ def _has_valid_contribution(user: User, db: Session) -> bool:
         Contribution.user_id == user.id,
         Contribution.status == UploadStatus.passed,
     ).count() > 0
+
+
+def _extract_robot_from_tags(tags_json: Optional[str]) -> Optional[str]:
+    """从 JSON tags 字符串中提取 robot_type 值，用于同步 robot 列"""
+    if not tags_json:
+        return None
+    try:
+        data = json.loads(tags_json)
+        return data.get("robot_type")
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+# ─── Tag 配置接口（供前端动态获取，备用）─────────────────────────────────────
+
+@router.get("/tag-config")
+def get_tag_config() -> List[Dict[str, Any]]:
+    """返回所有 tag 分类定义，前端可用此接口动态构建 tag 选择器"""
+    return TAG_CATEGORIES
 
 
 # ─── 列出公开数据集 ────────────────────────────────────────────────────────────
@@ -117,11 +138,8 @@ def complete_upload(
     db.commit()
     db.refresh(upload)
 
-    # 合并两类 tag
-    combined_tags = ",".join(filter(None, [body.robot_type_tags, body.task_type_tags])) or None
-
-    # 触发异步校验任务，传入描述和 tags
-    validate_dataset_task.delay(str(upload.id), body.description, combined_tags)
+    # 触发异步校验任务，传入描述和 tags（JSON 字符串）
+    validate_dataset_task.delay(str(upload.id), body.description, body.tags)
 
     return UploadStatusResponse(
         upload_id=str(upload.id),
@@ -239,10 +257,12 @@ def update_dataset(
         d.description = body.description
     if body.tags is not None:
         d.tags = body.tags
+        # 自动同步 robot 列（用于 API 兼容性）
+        robot = _extract_robot_from_tags(body.tags)
+        if robot is not None:
+            d.robot = robot
     if body.is_public is not None:
         d.is_public = body.is_public
-    if body.robot is not None:
-        d.robot = body.robot
     if body.license is not None:
         d.license = body.license
 

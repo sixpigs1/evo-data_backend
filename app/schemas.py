@@ -1,8 +1,95 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
+import json
+
 from pydantic import BaseModel, field_validator
+
+
+# ─── Tag 配置（后端权威定义，与前端 tagConfig.ts 保持同步）──────────────────────
+#
+# 扩展说明：
+#   - 增加新分类：在 TAG_CATEGORIES 末尾追加一个 dict
+#   - 增加某分类的选项：在对应 options 列表末尾追加
+#   - key 一旦确定不可修改（已写入数据库的 JSON key）
+#
+TAG_CATEGORIES: List[Dict[str, Any]] = [
+    {
+        "key": "robot_type",
+        "label": "本体类型",
+        "type": "single",
+        "required": False,
+        "options": ["SO100", "SO101", "Piper", "UR5", "Franka-Panda", "xArm6"],
+    },
+    {
+        "key": "task_type",
+        "label": "任务类型",
+        "type": "single",
+        "required": False,
+        "options": ["工业生产装配", "商业零售与陈列", "酒店服务", "食品与餐饮", "家庭生活", "医疗助理", "专业科研", "教育场景"],
+    },
+    {
+        "key": "other",
+        "label": "其他标签",
+        "type": "multi",
+        "required": False,
+        "options": ["双臂操作", "柔性物体", "可移动本体"],
+    },
+    {
+        "key": "data_type",
+        "label": "数据类型",
+        "type": "single",
+        "required": False,
+        "options": ["标准操作数据", "Evo-RL数据"],
+    },
+    {
+        "key": "data_format",
+        "label": "数据格式",
+        "type": "single",
+        "required": False,
+        "options": ["LeRobot 2.1", "LeRobot 3.0"],
+    },
+]
+
+# 有效选项集合，用于快速校验
+_VALID_OPTIONS: Dict[str, set] = {
+    c["key"]: set(c["options"]) for c in TAG_CATEGORIES
+}
+
+
+def validate_tags_json(tags_str: Optional[str]) -> Optional[str]:
+    """校验并清理 tags JSON 字符串，返回规范化后的字符串"""
+    if not tags_str:
+        return None
+    try:
+        data = json.loads(tags_str)
+    except (json.JSONDecodeError, TypeError):
+        raise ValueError("tags 必须是合法的 JSON 字符串")
+    if not isinstance(data, dict):
+        raise ValueError("tags JSON 必须是对象")
+    clean: Dict[str, Any] = {}
+    for cat in TAG_CATEGORIES:
+        key = cat["key"]
+        if key not in data:
+            continue
+        val = data[key]
+        valid_set = _VALID_OPTIONS[key]
+        if cat["type"] == "single":
+            if not isinstance(val, str):
+                raise ValueError(f"tags.{key} 必须是字符串")
+            if val not in valid_set:
+                raise ValueError(f"tags.{key} 的值 '{val}' 不在允许范围内")
+            clean[key] = val
+        else:  # multi
+            if not isinstance(val, list):
+                raise ValueError(f"tags.{key} 必须是数组")
+            for v in val:
+                if v not in valid_set:
+                    raise ValueError(f"tags.{key} 的值 '{v}' 不在允许范围内")
+            if val:
+                clean[key] = val
+    return json.dumps(clean, ensure_ascii=False) if clean else None
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -161,8 +248,12 @@ class UploadCompleteRequest(BaseModel):
     dataset_name: str
     oss_path: str            # user_uploads/{user_id}/{upload_id}/
     description: Optional[str] = None
-    robot_type_tags: Optional[str] = None   # 逗号分隔，如 "SO101,Piper"
-    task_type_tags: Optional[str] = None    # 逗号分隔，如 "家居操作,工业装配"
+    tags: Optional[str] = None  # JSON 序列化后的 TagsData 字符串
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, v: Optional[str]) -> Optional[str]:
+        return validate_tags_json(v)
 
 
 class UploadStatusResponse(BaseModel):
@@ -205,10 +296,14 @@ class DatasetDetail(DatasetListItem):
 
 class DatasetUpdateRequest(BaseModel):
     description: Optional[str] = None
-    tags: Optional[str] = None
+    tags: Optional[str] = None          # JSON 序列化后的 TagsData 字符串
     is_public: Optional[bool] = None
-    robot: Optional[str] = None
     license: Optional[str] = None
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, v: Optional[str]) -> Optional[str]:
+        return validate_tags_json(v)
 
 
 class DownloadUrlRequest(BaseModel):

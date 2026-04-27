@@ -1,6 +1,7 @@
 """
 Celery 任务定义
 """
+import json
 import logging
 import uuid
 
@@ -9,6 +10,16 @@ from celery import Celery
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _robot_from_tags(tags_json: str = None) -> str:
+    """从 JSON tags 字符串中提取 robot_type，用于同步 robot 列"""
+    if not tags_json:
+        return None
+    try:
+        return json.loads(tags_json).get("robot_type")
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 celery_app = Celery(
     "evo_data_worker",
@@ -69,6 +80,7 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
                 name=upload.dataset_name or f"dataset-{upload_id[:8]}",
                 description=description or info.get("description", ""),
                 tags=tags,
+                robot=_robot_from_tags(tags),   # 从 tags JSON 同步 robot 列
                 version=detected,
                 oss_path=upload.oss_path,
                 total_episodes=info.get("total_episodes"),
