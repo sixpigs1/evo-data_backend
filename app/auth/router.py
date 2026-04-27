@@ -26,6 +26,7 @@ from app.schemas import (
     CaptchaResponse,
     ChangePhoneRequest,
     LoginRequest,
+    NicknameUpdateRequest,
     PasswordLoginRequest,
     RefreshRequest,
     ResetPasswordRequest,
@@ -181,13 +182,17 @@ def login_with_password(body: PasswordLoginRequest, db: Session = Depends(get_db
 
 @router.post("/reset-password")
 def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
-    """通过短信验证码重置密码"""
+    """通过短信验证码重置密码（幂等：120秒内重试直接返回成功）"""
     r = get_redis()
+
+    # 幂等检查：若120秒内已成功处理过，直接返回成功（防止网络超时后重试失败）
+    if r.get(f"sms_done:reset_password:{body.phone}"):
+        return {"message": "密码已重置"}
+
     code_key = f"sms:reset_password:{body.phone}"
     stored_code = r.get(code_key)
     if not stored_code or stored_code != body.sms_code:
         raise HTTPException(status_code=400, detail="短信验证码错误或已过期")
-    r.delete(code_key)
 
     user = db.query(User).filter(User.phone == body.phone).first()
     if not user:
@@ -195,6 +200,8 @@ def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
 
     user.password_hash = hash_password(body.new_password)
     db.commit()
+    r.delete(code_key)
+    r.setex(f"sms_done:reset_password:{body.phone}", 120, "1")
     return {"message": "密码已重置"}
 
 
@@ -208,11 +215,15 @@ def change_phone(
 ):
     """验证发到新手机号的短信验证码后，完成手机号变更"""
     r = get_redis()
+
+    # 幂等检查
+    if r.get(f"sms_done:change_phone:{body.new_phone}"):
+        return {"message": "手机号已变更"}
+
     code_key = f"sms:change_phone:{body.new_phone}"
     stored_code = r.get(code_key)
     if not stored_code or stored_code != body.sms_code:
         raise HTTPException(status_code=400, detail="短信验证码错误或已过期")
-    r.delete(code_key)
 
     # 检查新号码是否已被使用
     existing = db.query(User).filter(User.phone == body.new_phone).first()
@@ -221,4 +232,21 @@ def change_phone(
 
     current_user.phone = body.new_phone
     db.commit()
+    r.delete(code_key)
+    r.setex(f"sms_done:change_phone:{body.new_phone}", 120, "1")
     return {"message": "手机号已变更"}
+
+
+# ─── 修改昵称（无需验证）─────────────────────────────────────────────────────────
+
+@router.patch("/me/nickname", response_model=UserInfo)
+def update_nickname(
+    body: NicknameUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """无需验证，直接修改昵称（最多20个字符）"""
+    current_user.nickname = body.nickname or None
+    db.commit()
+    db.refresh(current_user)
+    return current_user

@@ -164,17 +164,24 @@ def get_download_url(
 ):
     """
     生成 OSS 签名下载 URL。
-    权限要求：用户必须有至少一个通过校验的贡献。
+    权限：admin 可下载任意数据集；数据集 owner 可下载自己的；其他用户需有贡献。
     """
-    if not _has_valid_contribution(current_user, db):
-        raise HTTPException(
-            status_code=403,
-            detail="需要先贡献至少一个有效数据集才能下载",
-        )
-
-    d = db.query(Dataset).filter(Dataset.id == dataset_id, Dataset.is_public == True).first()
+    d = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not d:
-        raise HTTPException(status_code=404, detail="数据集不存在或未公开")
+        raise HTTPException(status_code=404, detail="数据集不存在")
+
+    is_owner = str(d.owner_id) == str(current_user.id)
+    is_admin = current_user.level == "admin"
+
+    if not is_owner and not is_admin:
+        # 普通用户需要有贡献才能下载公开数据集
+        if not d.is_public:
+            raise HTTPException(status_code=403, detail="无权访问此数据集")
+        if not _has_valid_contribution(current_user, db):
+            raise HTTPException(
+                status_code=403,
+                detail="需要先贡献至少一个有效数据集才能下载",
+            )
 
     if not d.oss_path:
         raise HTTPException(status_code=404, detail="数据集文件不可用")
@@ -222,7 +229,10 @@ def update_dataset(
     d = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not d:
         raise HTTPException(status_code=404, detail="数据集不存在")
-    if str(d.owner_id) != str(current_user.id):
+
+    is_owner = str(d.owner_id) == str(current_user.id)
+    is_admin = current_user.level == "admin"
+    if not is_owner and not is_admin:
         raise HTTPException(status_code=403, detail="无权修改此数据集")
 
     if body.description is not None:
@@ -238,4 +248,35 @@ def update_dataset(
 
     db.commit()
     db.refresh(d)
-    return DatasetDetail.model_validate(d)
+    detail = DatasetDetail.model_validate(d)
+    detail.owner_phone = _mask_phone(d.owner.phone) if d.owner else None
+    return detail
+
+
+# ─── 管理员：获取所有数据集 ───────────────────────────────────────────────────
+
+@router.get("/admin/all", response_model=List[DatasetListItem])
+def admin_list_all_datasets(
+    search: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """管理员接口：返回所有数据集（含私有），可搜索"""
+    if current_user.level != "admin":
+        raise HTTPException(status_code=403, detail="仅管理员可访问")
+
+    q = db.query(Dataset)
+    if search:
+        q = q.filter(
+            Dataset.name.ilike(f"%{search}%") | Dataset.description.ilike(f"%{search}%")
+        )
+    datasets = q.order_by(Dataset.created_at.desc()).offset(skip).limit(limit).all()
+
+    result = []
+    for d in datasets:
+        item = DatasetListItem.model_validate(d)
+        item.owner_phone = _mask_phone(d.owner.phone) if d.owner else None
+        result.append(item)
+    return result

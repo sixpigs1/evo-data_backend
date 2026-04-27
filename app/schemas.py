@@ -113,6 +113,20 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class NicknameUpdateRequest(BaseModel):
+    nickname: Optional[str] = None
+
+    @field_validator("nickname")
+    @classmethod
+    def validate_nickname(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            v = v.strip()
+            if len(v) > 20:
+                raise ValueError("昵称最多20个字符")
+            return v or None
+        return v
+
+
 class UserInfo(BaseModel):
     id: str
     phone: str
