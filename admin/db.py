@@ -58,13 +58,13 @@ def cmd_users():
     section("所有用户")
     with engine.connect() as conn:
         rows = conn.execute(text("""
-            SELECT id, phone, level, rank, is_active, created_at
+            SELECT id, phone, level, `rank`, is_active, created_at
             FROM users ORDER BY created_at DESC
         """)).fetchall()
     print(f"{'手机号':15}  {'等级':12}  {'积分':6}  {'激活':4}  {'创建时间':20}  ID")
     hr("-")
     for r in rows:
-        print(f"{r.phone:15}  {r.level:12}  {r.rank:<6}  {'✓' if r.is_active else '✗':4}  {str(r.created_at)[:19]:20}  {r.id}")
+        print(f"{r.phone:15}  {r.level:12}  {r[3]:<6}  {'✓' if r.is_active else '✗':4}  {str(r.created_at)[:19]:20}  {r.id}")
     print(f"\n共 {len(rows)} 个用户")
 
 
@@ -188,7 +188,7 @@ def cmd_stats():
 def cmd_set_admin(phone):
     with engine.begin() as conn:
         r = conn.execute(text(
-            "UPDATE users SET level='admin', rank=100 WHERE phone=:p"
+            "UPDATE users SET level='admin', `rank`=100 WHERE phone=:p"
         ), {"p": phone})
     if r.rowcount:
         print(f"✅ {phone} 已设为 admin")
