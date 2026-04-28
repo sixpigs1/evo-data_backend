@@ -44,7 +44,7 @@ class User(Base):
     phone = Column(String(20), unique=True, nullable=False, index=True)
     hashed_password = Column(String(128), nullable=True)  # 预留密码字段
     nickname = Column(String(64), nullable=True)
-    level = Column(Enum(UserLevel), default=UserLevel.normal, nullable=False)
+    level = Column(Enum(UserLevel, values_callable=lambda x: [e.value for e in x]), default=UserLevel.normal, nullable=False)
     rank = Column(Integer, default=0)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -66,7 +66,7 @@ class Dataset(Base):
     description = Column(Text, nullable=True)
     tags = Column(String(512), nullable=True)          # 逗号分隔
     is_public = Column(Boolean, default=False)
-    version = Column(Enum(DatasetVersion), default=DatasetVersion.unknown)
+    version = Column(Enum(DatasetVersion, values_callable=lambda x: [e.value for e in x]), default=DatasetVersion.unknown)
     oss_path = Column(String(1024), nullable=True)     # 正式区路径
     total_episodes = Column(Integer, nullable=True)
     total_frames = Column(Integer, nullable=True)
@@ -93,9 +93,9 @@ class Upload(Base):
     dataset_id = Column(CHAR(36), ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True)
     oss_path = Column(String(1024), nullable=False)     # 临时区路径 user_uploads/{user_id}/{upload_id}/
     dataset_name = Column(String(256), nullable=True)
-    status = Column(Enum(UploadStatus), default=UploadStatus.pending, nullable=False)
+    status = Column(Enum(UploadStatus, values_callable=lambda x: [e.value for e in x]), default=UploadStatus.pending, nullable=False)
     error_message = Column(Text, nullable=True)
-    detected_version = Column(Enum(DatasetVersion), nullable=True)
+    detected_version = Column(Enum(DatasetVersion, values_callable=lambda x: [e.value for e in x]), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -112,7 +112,7 @@ class Contribution(Base):
     user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     dataset_id = Column(CHAR(36), ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False, index=True)
     upload_id = Column(CHAR(36), ForeignKey("uploads.id", ondelete="SET NULL"), nullable=True)
-    status = Column(Enum(UploadStatus), default=UploadStatus.pending, nullable=False)
+    status = Column(Enum(UploadStatus, values_callable=lambda x: [e.value for e in x]), default=UploadStatus.pending, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
 
     user = relationship("User", back_populates="contributions")
