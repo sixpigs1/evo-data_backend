@@ -78,20 +78,18 @@ def cmd_revalidate(upload_id: str):
 
         print(f"upload_id : {upload.id}")
         print(f"oss_path  : {upload.oss_path}")
-        print(f"当前状态  : {upload.status.value}")
+        print(f"当前状态  : {upload.status.value if hasattr(upload.status, 'value') else upload.status}")
         print(f"dataset_name: {upload.dataset_name}")
 
-        # 重置状态为 pending，避免任务被忽略
+        # 无论当前状态如何，强制重置为 pending 再触发
         upload.status = UploadStatus.pending
         upload.error_message = None
         db.commit()
 
-        # 异步触发
+        # 异步触发（用关键字参数，兼容 tasks.py 新旧签名）
         validate_dataset_task.delay(
             str(upload.id),
-            upload.dataset_name,
-            None,   # tags 从 upload 记录里没存，需要从 dataset 或手动传入
-            False,  # is_public
+            description=upload.dataset_name,
         )
         print(f"\n✅ 已触发校验任务，请用 docker compose logs -f worker 查看进度。")
     finally:
