@@ -111,7 +111,11 @@ def get_presign_urls(
             if not key.startswith(expected_prefix):
                 raise HTTPException(status_code=400, detail=f"非法路径: {rel_path}")
             # 生成预签名 PUT URL，有效期 3600 秒
-            urls[rel_path] = bucket.sign_url("PUT", key, 3600)
+            # 签名时指定 Content-Type，前端上传时也必须发送相同的 Content-Type
+            urls[rel_path] = bucket.sign_url(
+                "PUT", key, 3600,
+                headers={"Content-Type": "application/octet-stream"}
+            )
 
         return PresignResponse(urls=urls)
 
