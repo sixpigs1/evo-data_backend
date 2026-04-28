@@ -114,7 +114,7 @@ def _read_json(bucket: oss2.Bucket, key: str) -> Optional[dict]:
 def validate_dataset(oss_path: str) -> ValidationResult:
     """
     校验 OSS 上 oss_path 目录下的数据集格式。
-    oss_path 结尾不含 /
+    oss_path 结尾不含 /，且支持用户上传时多了一层数据集名称目录。
     """
     result = ValidationResult(passed=False)
 
@@ -127,11 +127,21 @@ def validate_dataset(oss_path: str) -> ValidationResult:
             result.errors.append(f"目录 {oss_path} 为空或不存在")
             return result
 
-        # 1. 检查 meta/info.json 存在
-        info_key = prefix + "meta/info.json"
-        if not any(k == info_key for k in all_keys):
-            result.errors.append("缺少 meta/info.json")
+        # ── 自动探测数据集根目录 ──────────────────────────────────────────────
+        # 用户上传时可能带了一层顶层目录名（如 libero_10_no_noops_1.0.0_lerobot/）
+        # 找到第一个 meta/info.json，取其父目录为数据集根
+        info_candidates = [k for k in all_keys if k.endswith("meta/info.json")]
+        if not info_candidates:
+            result.errors.append("缺少 meta/info.json（已搜索整个上传目录树）")
             return result
+
+        # 取路径最短的（最浅的）info.json 作为数据集根
+        info_key = min(info_candidates, key=lambda k: k.count("/"))
+        dataset_root = info_key[: -len("meta/info.json")]  # 包含末尾 /
+        logger.info(f"探测到数据集根目录: {dataset_root}")
+
+        # 重新筛选仅属于该数据集根的文件键（过滤其他子目录干扰）
+        root_keys = [k for k in all_keys if k.startswith(dataset_root)]
 
         # 2. 读取并解析 info.json
         info = _read_json(bucket, info_key)
@@ -148,7 +158,7 @@ def validate_dataset(oss_path: str) -> ValidationResult:
             version = FormatVersion.V30
         else:
             # 尝试从结构判断
-            has_episodes_parquet = any("meta/episodes.parquet" in k for k in all_keys)
+            has_episodes_parquet = any("meta/episodes.parquet" in k for k in root_keys)
             version = FormatVersion.V30 if has_episodes_parquet else FormatVersion.V21
 
         result.version = version
@@ -170,21 +180,21 @@ def validate_dataset(oss_path: str) -> ValidationResult:
 
         # 6. 校验 meta 元文件
         if version == FormatVersion.V21:
-            if not any("meta/tasks.jsonl" in k for k in all_keys):
+            if not any("meta/tasks.jsonl" in k for k in root_keys):
                 result.warnings.append("缺少 meta/tasks.jsonl（v2.1 推荐）")
         else:
-            if not any("meta/episodes.parquet" in k for k in all_keys):
+            if not any("meta/episodes.parquet" in k for k in root_keys):
                 result.errors.append("v3.0 格式缺少 meta/episodes.parquet")
-            if not any("meta/tasks.parquet" in k for k in all_keys):
+            if not any("meta/tasks.parquet" in k for k in root_keys):
                 result.warnings.append("缺少 meta/tasks.parquet（v3.0 推荐）")
 
         # 7. 校验 data 目录存在
-        has_data = any("/data/" in k or k.startswith(prefix + "data/") for k in all_keys)
+        has_data = any("/data/" in k or k.startswith(dataset_root + "data/") for k in root_keys)
         if not has_data:
             result.errors.append("缺少 data/ 目录")
 
         # 8. 校验至少有一个 episode parquet
-        has_episode = any("episode_" in k and k.endswith(".parquet") for k in all_keys)
+        has_episode = any("episode_" in k and k.endswith(".parquet") for k in root_keys)
         if not has_episode:
             result.errors.append("未找到 episode 数据文件（data/chunk-*/episode_*.parquet）")
 
