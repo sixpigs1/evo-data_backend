@@ -3,8 +3,10 @@ STS 签发接口
 用户获取临时凭证后，直接从浏览器上传文件到 OSS
 """
 import uuid
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.config import settings
 from app.deps import get_current_user
@@ -67,3 +69,53 @@ def get_sts_credentials(current_user: User = Depends(get_current_user)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"STS 签发失败: {str(e)}")
+
+
+class PresignRequest(BaseModel):
+    upload_dir: str          # 来自 STS 响应的 upload_dir，如 user_uploads/{uid}/{upload_id}/
+    relative_paths: List[str]  # 文件相对路径列表，如 ["data/ep0.parquet", ...]
+
+
+class PresignResponse(BaseModel):
+    urls: dict  # { relative_path: presigned_put_url }
+
+
+@router.post("/presign", response_model=PresignResponse)
+def get_presign_urls(
+    body: PresignRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    为每个文件生成预签名 PUT URL，前端直接 PUT 无需任何 Authorization 头。
+    预签名 URL 有效期 1 小时，且每个 URL 仅能写入指定的 object key。
+    """
+    # 安全校验：upload_dir 必须属于当前用户
+    expected_prefix = f"user_uploads/{current_user.id}/"
+    if not body.upload_dir.startswith(expected_prefix):
+        raise HTTPException(status_code=403, detail="upload_dir 不属于当前用户")
+
+    try:
+        import oss2
+
+        # 使用公网 endpoint（前端浏览器无法访问内网）
+        public_endpoint = settings.OSS_ENDPOINT.replace(
+            "-internal.aliyuncs.com", ".aliyuncs.com"
+        )
+        auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
+        bucket = oss2.Bucket(auth, public_endpoint, settings.OSS_BUCKET_NAME)
+
+        urls = {}
+        for rel_path in body.relative_paths:
+            # 拼接完整 object key，并再次校验路径安全
+            key = body.upload_dir + rel_path
+            if not key.startswith(expected_prefix):
+                raise HTTPException(status_code=400, detail=f"非法路径: {rel_path}")
+            # 生成预签名 PUT URL，有效期 3600 秒
+            urls[rel_path] = bucket.sign_url("PUT", key, 3600)
+
+        return PresignResponse(urls=urls)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"预签名 URL 生成失败: {str(e)}")
