@@ -37,7 +37,7 @@ celery_app.conf.update(
 
 
 @celery_app.task(name="validate_dataset", bind=True, max_retries=3)
-def validate_dataset_task(self, upload_id: str, description: str = None, tags: str = None):
+def validate_dataset_task(self, upload_id: str, description: str = None, tags: str = None, is_public: bool = False):
     """异步校验上传的数据集格式"""
     from app.database import SessionLocal
     from app.datasets.validator import FormatVersion, validate_dataset
@@ -85,7 +85,7 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
                 oss_path=upload.oss_path,
                 total_episodes=info.get("total_episodes"),
                 total_frames=info.get("total_frames"),
-                is_public=False,   # 默认不公开，需用户手动设置
+                is_public=is_public,   # 使用上传时用户的设置
             )
             db.add(dataset)
             db.flush()
@@ -158,7 +158,18 @@ def generate_preview_task(self, dataset_id: str):
 
         auth = oss2.Auth(cfg.OSS_ACCESS_KEY_ID, cfg.OSS_ACCESS_KEY_SECRET)
         bucket = oss2.Bucket(auth, cfg.OSS_ENDPOINT, cfg.OSS_BUCKET_NAME)
-        prefix = dataset.oss_path.rstrip("/") + "/"
+        upload_prefix = dataset.oss_path.rstrip("/") + "/"
+
+        # ── 自动探测数据集根目录（与 validator 逻辑一致）──────────────────────
+        # oss_path 可能是上传根目录，文件实际在其下一层的数据集名称目录中
+        all_keys = [obj.key for obj in oss2.ObjectIterator(bucket, prefix=upload_prefix)]
+        info_candidates = [k for k in all_keys if k.endswith("meta/info.json")]
+        if not info_candidates:
+            logger.warning(f"No meta/info.json found under {upload_prefix}, skipping preview")
+            return
+        info_key = min(info_candidates, key=lambda k: k.count("/"))
+        prefix = info_key[: -len("meta/info.json")]  # 数据集根，含末尾 /
+        logger.info(f"Preview: 数据集根目录 = {prefix}")
 
         # 读取 info.json
         info_obj = bucket.get_object(prefix + "meta/info.json")
