@@ -62,6 +62,32 @@ def get_tag_config() -> List[Dict[str, Any]]:
     return TAG_CATEGORIES
 
 
+# ─── 站点聚合统计 ─────────────────────────────────────────────────────────────
+
+@router.get("/stats")
+def get_stats(db: Session = Depends(get_db)):
+    """
+    返回全站公开数据集的聚合统计数据：
+    - total_datasets: 数据集数量
+    - total_episodes: 总轨迹数
+    - total_frames: 总帧数
+    - total_size_bytes: 总存储体积
+    """
+    from sqlalchemy import func
+    row = db.query(
+        func.count(Dataset.id).label("total_datasets"),
+        func.coalesce(func.sum(Dataset.total_episodes), 0).label("total_episodes"),
+        func.coalesce(func.sum(Dataset.total_frames), 0).label("total_frames"),
+        func.coalesce(func.sum(Dataset.size_bytes), 0).label("total_size_bytes"),
+    ).filter(Dataset.is_public == True).one()
+    return {
+        "total_datasets": row.total_datasets,
+        "total_episodes": row.total_episodes,
+        "total_frames": row.total_frames,
+        "total_size_bytes": row.total_size_bytes,
+    }
+
+
 # ─── 列出公开数据集 ────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[DatasetListItem])
