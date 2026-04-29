@@ -10,6 +10,9 @@
 
   # 列出最近 N 条失败的 upload
   docker compose exec api python3 admin/revalidate.py --list-failed [N]
+
+  # 对指定 dataset_id 重新触发预览生成
+  docker compose exec api python3 admin/revalidate.py --preview <dataset_id>
 """
 import sys
 import os
@@ -96,6 +99,28 @@ def cmd_revalidate(upload_id: str):
         db.close()
 
 
+def cmd_preview(dataset_id: str):
+    """对已有 dataset_id 重新触发预览生成任务"""
+    from app.database import SessionLocal
+    from app.models import Dataset
+    from app.worker.tasks import generate_preview_task
+
+    db = SessionLocal()
+    try:
+        d = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not d:
+            print(f"❌ 找不到 dataset_id={dataset_id}")
+            sys.exit(1)
+        print(f"dataset_id  : {d.id}")
+        print(f"name        : {d.name}")
+        print(f"oss_path    : {d.oss_path}")
+        print(f"has_preview : {d.has_preview}")
+        generate_preview_task.delay(str(d.id))
+        print("\n✅ 已触发预览生成任务，请用 docker compose logs -f worker 查看进度。")
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
@@ -107,5 +132,7 @@ if __name__ == "__main__":
     elif args[0] == "--list-failed":
         n = int(args[1]) if len(args) >= 2 else 10
         cmd_list_failed(n)
+    elif args[0] == "--preview" and len(args) >= 2:
+        cmd_preview(args[1])
     else:
         cmd_revalidate(args[0])
