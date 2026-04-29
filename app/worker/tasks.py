@@ -214,7 +214,11 @@ def generate_preview_task(self, dataset_id: str):
                 key = m.group(1)
                 width = int(m.group(2)) if m.group(2) else 0
                 val = kw.get(key, 0)
-                return str(int(val)).zfill(width) if width else str(int(val))
+                # 有宽度格式（如 :03d）才做整数转换，否则直接字符串替换
+                if width:
+                    return str(int(val)).zfill(width)
+                else:
+                    return str(val)
             return re.sub(r"\{(\w+)(?::0?(\d+)d)?\}", repl, template)
 
         try:
