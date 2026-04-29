@@ -139,7 +139,7 @@ def complete_upload(
     db.refresh(upload)
 
     # 触发异步校验任务，传入描述和 tags（JSON 字符串）
-    validate_dataset_task.delay(str(upload.id), body.description, body.tags)
+    validate_dataset_task.delay(str(upload.id), body.description, body.tags, body.is_public)
 
     return UploadStatusResponse(
         upload_id=str(upload.id),

@@ -265,6 +265,7 @@ class UploadCompleteRequest(BaseModel):
     oss_path: str            # user_uploads/{user_id}/{upload_id}/
     description: Optional[str] = None
     tags: Optional[str] = None  # JSON 序列化后的 TagsData 字符串
+    is_public: bool = False  # 上传时即可设置是否公开，默认不公开
 
     @field_validator("tags")
     @classmethod

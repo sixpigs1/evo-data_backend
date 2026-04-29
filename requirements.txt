@@ -19,3 +19,5 @@ celery==5.4.0
 aiofiles==24.1.0
 python-dotenv==1.0.1
 tenacity==9.0.0
+pandas==2.2.3
+pyarrow==17.0.0
