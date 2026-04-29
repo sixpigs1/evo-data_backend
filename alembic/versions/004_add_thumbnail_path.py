@@ -7,8 +7,8 @@ Create Date: 2026-04-29
 from alembic import op
 import sqlalchemy as sa
 
-revision = '004'
-down_revision = '003'
+revision = '004_add_thumbnail_path'
+down_revision = '003_tags_text'
 branch_labels = None
 depends_on = None
 
