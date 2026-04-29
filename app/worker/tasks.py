@@ -183,29 +183,42 @@ def generate_preview_task(self, dataset_id: str):
         generated_thumbnail = False
         generated_trajectory = False
 
-        # ── 1. 提取视频第一帧作为缩略图 ────────────────────────────────────────
-        # 搜索 videos/ 目录下的 episode_000000.mp4
+        # ── 1. 提取视频第一帧作为缩略图 + 收集所有摄像头视频 key ────────────────
+        # 搜索 videos/ 目录下的 episode_000000.mp4（各摄像头各一个文件）
         video_keys = [
             k for k in all_keys
             if k.startswith(prefix + "videos/") and "episode_000000" in k and k.endswith(".mp4")
         ]
         if not video_keys:
-            # 也搜索 episode_0.mp4（兼容）
             video_keys = [
                 k for k in all_keys
                 if k.startswith(prefix + "videos/") and k.endswith(".mp4")
             ]
 
-        if video_keys:
-            video_key = video_keys[0]
-            logger.info(f"Preview: 使用视频文件 {video_key}")
+        # 将 video_keys 按摄像头名称归组：
+        # e.g. ".../observation.images.top/episode_000000.mp4" → cam="top"
+        video_keys_by_cam: dict = {}
+        for vkey in video_keys:
+            parts = vkey.split("/")
+            cam_name = None
+            for part in parts:
+                if "observation.images." in part:
+                    cam_name = part.replace("observation.images.", "")
+                    break
+            if cam_name is None:
+                cam_name = parts[-2] if len(parts) >= 2 else f"cam{len(video_keys_by_cam)}"
+            video_keys_by_cam[cam_name] = vkey
+
+        if video_keys_by_cam:
+            first_video_key = next(iter(video_keys_by_cam.values()))
+            logger.info(f"Preview: 找到 {len(video_keys_by_cam)} 个摄像头视频: {list(video_keys_by_cam.keys())}")
             try:
                 with tempfile.TemporaryDirectory() as tmpdir:
                     video_path = os.path.join(tmpdir, "episode_0.mp4")
                     thumbnail_path = os.path.join(tmpdir, "thumbnail.jpg")
 
-                    # 从 OSS 下载视频
-                    bucket.get_object_to_file(video_key, video_path)
+                    # 从 OSS 下载第一个摄像头的视频用于提取缩略图
+                    bucket.get_object_to_file(first_video_key, video_path)
 
                     # 用 ffmpeg 提取第一帧
                     result = subprocess.run(
@@ -237,6 +250,7 @@ def generate_preview_task(self, dataset_id: str):
                 logger.warning(f"Preview: 视频帧提取失败: {e}")
         else:
             logger.info(f"Preview: 未找到视频文件，跳过缩略图生成")
+            video_keys_by_cam = {}
 
         # ── 2. 提取 episode_0 轨迹数据（来自 parquet）─────────────────────────
         ep0_key = None
@@ -245,6 +259,7 @@ def generate_preview_task(self, dataset_id: str):
                 ep0_key = obj.key
                 break
 
+        df = None
         if ep0_key:
             try:
                 import pandas as pd
@@ -255,8 +270,8 @@ def generate_preview_task(self, dataset_id: str):
                 table = pq.read_table(buf)
                 df = table.to_pandas()
 
-                # 提取前 200 帧（排除图像列，避免 JSON 过大）
-                MAX_FRAMES = 200
+                # 提取前 300 帧（排除图像列，避免 JSON 过大）
+                MAX_FRAMES = 300
                 image_cols = [c for c in df.columns if "image" in c.lower() or "pixel" in c.lower()]
                 df_clean = df.drop(columns=image_cols, errors="ignore")
 
@@ -283,16 +298,20 @@ def generate_preview_task(self, dataset_id: str):
                     headers={"Content-Type": "application/json"},
                 )
 
-                # meta_preview.json
+                # meta_preview.json：包含视频 key 和 parquet key，供后端签名
+                non_image_features = {
+                    k: v for k, v in info.get("features", {}).items()
+                    if k not in image_cols and "image" not in k.lower()
+                }
                 meta_preview = {
                     "dataset_id": dataset_id,
                     "episode_index": 0,
                     "fps": info.get("fps", 30),
                     "total_frames": len(df),
-                    "features": {
-                        k: v for k, v in info.get("features", {}).items()
-                        if k not in image_cols
-                    },
+                    "features": non_image_features,
+                    # 全量 OSS key，用于后端签名
+                    "video_keys": video_keys_by_cam,
+                    "parquet_key": ep0_key,
                 }
                 bucket.put_object(
                     preview_prefix + "meta_preview.json",
@@ -300,13 +319,29 @@ def generate_preview_task(self, dataset_id: str):
                     headers={"Content-Type": "application/json"},
                 )
                 generated_trajectory = True
-                logger.info(f"Preview: 轨迹数据已生成 ({len(trajectory_rows)} frames)")
+                logger.info(f"Preview: 轨迹数据已生成 ({len(trajectory_rows)} frames, {len(video_keys_by_cam)} cameras)")
             except ImportError:
                 logger.warning("pandas/pyarrow 未安装，跳过轨迹生成")
             except Exception as e:
                 logger.warning(f"Preview: 轨迹提取失败: {e}")
         else:
             logger.warning(f"No episode_0 parquet found for dataset {dataset_id}")
+            # 即使没有 parquet，也写入 meta_preview（含视频信息）
+            if video_keys_by_cam:
+                meta_preview = {
+                    "dataset_id": dataset_id,
+                    "episode_index": 0,
+                    "fps": info.get("fps", 30),
+                    "total_frames": 0,
+                    "features": {},
+                    "video_keys": video_keys_by_cam,
+                    "parquet_key": None,
+                }
+                bucket.put_object(
+                    preview_prefix + "meta_preview.json",
+                    json_lib.dumps(meta_preview).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
 
         # ── 3. 更新数据集预览状态 ──────────────────────────────────────────────
         if generated_thumbnail or generated_trajectory:

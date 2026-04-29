@@ -220,6 +220,67 @@ def get_download_url(
         raise HTTPException(status_code=500, detail=f"生成下载链接失败: {str(e)}")
 
 
+# ─── 获取预览完整信息（含签名 URL）──────────────────────────────────────────────
+
+@router.get("/{dataset_id}/preview-info")
+def get_preview_info(
+    dataset_id: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """
+    返回数据集 episode_0 的预览信息：
+    - 各摄像头视频的 OSS 签名 URL（2h 有效）
+    - trajectory.json 的签名 URL
+    - fps / total_frames / features
+    """
+    d = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    if not d.is_public and (not current_user or str(current_user.id) != str(d.owner_id)):
+        raise HTTPException(status_code=403, detail="无权访问此数据集")
+    if not d.has_preview or not d.preview_path:
+        raise HTTPException(status_code=404, detail="暂无预览数据，请稍后再试")
+
+    import oss2
+    auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
+    bucket = oss2.Bucket(auth, settings.OSS_ENDPOINT, settings.OSS_BUCKET_NAME)
+
+    preview_prefix = d.preview_path.rstrip("/") + "/"
+    meta_key = preview_prefix + "meta_preview.json"
+
+    try:
+        meta = json.loads(bucket.get_object(meta_key).read())
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"预览元数据不可用: {str(e)}")
+
+    EXPIRES = 7200  # 2 小时
+
+    # 各摄像头视频签名 URL
+    video_urls: dict = {}
+    for cam, oss_key in meta.get("video_keys", {}).items():
+        try:
+            video_urls[cam] = bucket.sign_url("GET", oss_key, EXPIRES)
+        except Exception:
+            pass
+
+    # trajectory.json 签名 URL
+    trajectory_url = None
+    try:
+        trajectory_url = bucket.sign_url("GET", preview_prefix + "trajectory.json", EXPIRES)
+    except Exception:
+        pass
+
+    return {
+        "fps": meta.get("fps", 30),
+        "total_frames": meta.get("total_frames", 0),
+        "episode_index": meta.get("episode_index", 0),
+        "features": meta.get("features", {}),
+        "video_urls": video_urls,       # {cam_name: signed_url}
+        "trajectory_url": trajectory_url,
+    }
+
+
 # ─── 获取缩略图（签名重定向）────────────────────────────────────────────────────
 
 @router.get("/{dataset_id}/thumbnail")
