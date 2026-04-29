@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     SMS_DEV_MODE: bool = True
 
     # CORS
-    ALLOWED_ORIGINS: str = "http://localhost:3000,https://data.evomind-tech.com"
+    # 包含 RoboClaw 前端本地开发地址（5173）和生产地址
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173,https://data.evomind-tech.com"
 
     @property
     def allowed_origins_list(self) -> List[str]:
