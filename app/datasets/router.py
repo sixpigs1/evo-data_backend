@@ -5,7 +5,8 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -217,6 +218,33 @@ def get_download_url(
         return DownloadUrlResponse(url=url, expires_in=expires)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"生成下载链接失败: {str(e)}")
+
+
+# ─── 获取缩略图（签名重定向）────────────────────────────────────────────────────
+
+@router.get("/{dataset_id}/thumbnail")
+def get_thumbnail(
+    dataset_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    生成 OSS 缩略图预签名 URL 并重定向。
+    公开数据集无需登录即可访问缩略图。
+    """
+    d = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not d or not d.thumbnail_path:
+        raise HTTPException(status_code=404, detail="缩略图不存在")
+    if not d.is_public:
+        raise HTTPException(status_code=403, detail="无权访问此数据集")
+
+    try:
+        import oss2
+        auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
+        bucket = oss2.Bucket(auth, settings.OSS_ENDPOINT, settings.OSS_BUCKET_NAME)
+        url = bucket.sign_url("GET", d.thumbnail_path, 3600)
+        return RedirectResponse(url=url, status_code=302)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"生成缩略图链接失败: {str(e)}")
 
 
 # ─── 我的数据集 ───────────────────────────────────────────────────────────────

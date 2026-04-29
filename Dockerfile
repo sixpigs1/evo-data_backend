@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     default-libmysqlclient-dev \
     pkg-config \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # 使用阿里云 pip 镜像加速依赖安装

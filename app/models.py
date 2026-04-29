@@ -75,6 +75,7 @@ class Dataset(Base):
     license = Column(String(128), default="Apache-2.0")
     has_preview = Column(Boolean, default=False)
     preview_path = Column(String(1024), nullable=True)  # previews/{dataset_id}/episode_0/
+    thumbnail_path = Column(String(1024), nullable=True)  # previews/{dataset_id}/thumbnail.jpg
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

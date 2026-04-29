@@ -298,6 +298,7 @@ class DatasetListItem(BaseModel):
     robot: Optional[str]
     license: str
     has_preview: bool
+    thumbnail_path: Optional[str] = None
     created_at: datetime
     owner_phone: Optional[str] = None  # 脱敏后手机号
 

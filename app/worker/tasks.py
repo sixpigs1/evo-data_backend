@@ -138,11 +138,16 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
 @celery_app.task(name="generate_preview", bind=True, max_retries=2)
 def generate_preview_task(self, dataset_id: str):
     """
-    为数据集生成预览数据（episode_0 的帧和轨迹 JSON），写入 OSS previews/ 目录
+    为数据集生成预览数据：
+    - episode_0 轨迹 JSON（来自 parquet）
+    - thumbnail.jpg（来自 episode_0 视频第一帧，使用 ffmpeg）
+    写入 OSS previews/{dataset_id}/ 目录
     """
     import io
     import json as json_lib
+    import subprocess
     import tempfile
+    import os
 
     from app.database import SessionLocal
     from app.models import Dataset
@@ -160,8 +165,7 @@ def generate_preview_task(self, dataset_id: str):
         bucket = oss2.Bucket(auth, cfg.OSS_ENDPOINT, cfg.OSS_BUCKET_NAME)
         upload_prefix = dataset.oss_path.rstrip("/") + "/"
 
-        # ── 自动探测数据集根目录（与 validator 逻辑一致）──────────────────────
-        # oss_path 可能是上传根目录，文件实际在其下一层的数据集名称目录中
+        # ── 自动探测数据集根目录 ────────────────────────────────────────────────
         all_keys = [obj.key for obj in oss2.ObjectIterator(bucket, prefix=upload_prefix)]
         info_candidates = [k for k in all_keys if k.endswith("meta/info.json")]
         if not info_candidates:
@@ -175,84 +179,143 @@ def generate_preview_task(self, dataset_id: str):
         info_obj = bucket.get_object(prefix + "meta/info.json")
         info = json_lib.loads(info_obj.read())
 
-        # 找到 episode_0 的 parquet 文件
+        preview_prefix = f"previews/{dataset_id}/"
+        generated_thumbnail = False
+        generated_trajectory = False
+
+        # ── 1. 提取视频第一帧作为缩略图 ────────────────────────────────────────
+        # 搜索 videos/ 目录下的 episode_000000.mp4
+        video_keys = [
+            k for k in all_keys
+            if k.startswith(prefix + "videos/") and "episode_000000" in k and k.endswith(".mp4")
+        ]
+        if not video_keys:
+            # 也搜索 episode_0.mp4（兼容）
+            video_keys = [
+                k for k in all_keys
+                if k.startswith(prefix + "videos/") and k.endswith(".mp4")
+            ]
+
+        if video_keys:
+            video_key = video_keys[0]
+            logger.info(f"Preview: 使用视频文件 {video_key}")
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    video_path = os.path.join(tmpdir, "episode_0.mp4")
+                    thumbnail_path = os.path.join(tmpdir, "thumbnail.jpg")
+
+                    # 从 OSS 下载视频
+                    bucket.get_object_to_file(video_key, video_path)
+
+                    # 用 ffmpeg 提取第一帧
+                    result = subprocess.run(
+                        [
+                            "ffmpeg", "-y",
+                            "-i", video_path,
+                            "-vframes", "1",
+                            "-q:v", "3",
+                            "-vf", "scale=640:-1",
+                            thumbnail_path,
+                        ],
+                        capture_output=True,
+                        timeout=60,
+                    )
+                    if result.returncode == 0 and os.path.exists(thumbnail_path):
+                        with open(thumbnail_path, "rb") as f:
+                            thumbnail_data = f.read()
+                        bucket.put_object(
+                            preview_prefix + "thumbnail.jpg",
+                            thumbnail_data,
+                            headers={"Content-Type": "image/jpeg"},
+                        )
+                        dataset.thumbnail_path = preview_prefix + "thumbnail.jpg"
+                        generated_thumbnail = True
+                        logger.info(f"Preview: 缩略图已生成 ({len(thumbnail_data)} bytes)")
+                    else:
+                        logger.warning(f"ffmpeg failed: {result.stderr.decode()[:500]}")
+            except Exception as e:
+                logger.warning(f"Preview: 视频帧提取失败: {e}")
+        else:
+            logger.info(f"Preview: 未找到视频文件，跳过缩略图生成")
+
+        # ── 2. 提取 episode_0 轨迹数据（来自 parquet）─────────────────────────
         ep0_key = None
         for obj in oss2.ObjectIterator(bucket, prefix=prefix + "data/"):
             if "episode_000000.parquet" in obj.key or "episode_0.parquet" in obj.key:
                 ep0_key = obj.key
                 break
 
-        if not ep0_key:
-            logger.warning(f"No episode_0 parquet found for dataset {dataset_id}")
-            return
-
-        # 读取 parquet
-        try:
-            import hyparquet_py as hp  # 尝试使用纯 Python 实现
-        except ImportError:
+        if ep0_key:
             try:
                 import pandas as pd
                 import pyarrow.parquet as pq
+
+                ep0_data = bucket.get_object(ep0_key).read()
+                buf = io.BytesIO(ep0_data)
+                table = pq.read_table(buf)
+                df = table.to_pandas()
+
+                # 提取前 200 帧（排除图像列，避免 JSON 过大）
+                MAX_FRAMES = 200
+                image_cols = [c for c in df.columns if "image" in c.lower() or "pixel" in c.lower()]
+                df_clean = df.drop(columns=image_cols, errors="ignore")
+
+                trajectory_rows = []
+                for _, row in df_clean.head(MAX_FRAMES).iterrows():
+                    record: dict = {}
+                    for col in df_clean.columns:
+                        val = row[col]
+                        if hasattr(val, "tolist"):
+                            record[col] = val.tolist()
+                        elif hasattr(val, "item"):
+                            record[col] = val.item()
+                        else:
+                            try:
+                                record[col] = float(val)
+                            except Exception:
+                                pass
+                    trajectory_rows.append(record)
+
+                trajectory_json = json_lib.dumps(trajectory_rows)
+                bucket.put_object(
+                    preview_prefix + "trajectory.json",
+                    trajectory_json.encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+
+                # meta_preview.json
+                meta_preview = {
+                    "dataset_id": dataset_id,
+                    "episode_index": 0,
+                    "fps": info.get("fps", 30),
+                    "total_frames": len(df),
+                    "features": {
+                        k: v for k, v in info.get("features", {}).items()
+                        if k not in image_cols
+                    },
+                }
+                bucket.put_object(
+                    preview_prefix + "meta_preview.json",
+                    json_lib.dumps(meta_preview).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+                generated_trajectory = True
+                logger.info(f"Preview: 轨迹数据已生成 ({len(trajectory_rows)} frames)")
             except ImportError:
-                logger.warning("No parquet library available for preview generation")
-                return
+                logger.warning("pandas/pyarrow 未安装，跳过轨迹生成")
+            except Exception as e:
+                logger.warning(f"Preview: 轨迹提取失败: {e}")
+        else:
+            logger.warning(f"No episode_0 parquet found for dataset {dataset_id}")
 
-        ep0_data = bucket.get_object(ep0_key).read()
-
-        try:
-            import pandas as pd
-            import pyarrow.parquet as pq
-            buf = io.BytesIO(ep0_data)
-            table = pq.read_table(buf)
-            df = table.to_pandas()
-        except Exception as e:
-            logger.warning(f"Failed to read parquet for preview: {e}")
-            return
-
-        # 提取轨迹数据（取前 200 帧避免过大）
-        MAX_FRAMES = 200
-        trajectory_rows = []
-        for _, row in df.head(MAX_FRAMES).iterrows():
-            record: dict = {"timestamp": float(row.get("timestamp", 0))}
-            for col in df.columns:
-                val = row[col]
-                if hasattr(val, "tolist"):
-                    record[col] = val.tolist()
-                elif hasattr(val, "item"):
-                    record[col] = val.item()
-                else:
-                    try:
-                        record[col] = float(val)
-                    except Exception:
-                        pass
-            trajectory_rows.append(record)
-
-        trajectory_json = json_lib.dumps(trajectory_rows)
-        preview_prefix = f"previews/{dataset_id}/episode_0/"
-
-        # 写入 trajectory.json
-        bucket.put_object(preview_prefix + "trajectory.json", trajectory_json.encode())
-
-        # 写入 meta_preview.json
-        meta_preview = {
-            "dataset_id": dataset_id,
-            "episode_index": 0,
-            "fps": info.get("fps", 30),
-            "total_frames": len(df),
-            "task_instruction": None,
-            "features": info.get("features", {}),
-        }
-        bucket.put_object(
-            preview_prefix + "meta_preview.json",
-            json_lib.dumps(meta_preview).encode(),
-        )
-
-        # 更新数据集预览状态
-        dataset.has_preview = True
-        dataset.preview_path = preview_prefix
-        db.commit()
-
-        logger.info(f"Preview generated for dataset {dataset_id}")
+        # ── 3. 更新数据集预览状态 ──────────────────────────────────────────────
+        if generated_thumbnail or generated_trajectory:
+            dataset.has_preview = True
+            dataset.preview_path = preview_prefix
+            db.commit()
+            logger.info(f"Preview generated for dataset {dataset_id}: thumbnail={generated_thumbnail}, trajectory={generated_trajectory}")
+        else:
+            logger.warning(f"Preview: 没有生成任何预览内容，跳过状态更新")
 
     except Exception as e:
         logger.exception(f"Preview generation failed for dataset {dataset_id}: {e}")
