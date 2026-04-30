@@ -189,7 +189,8 @@ def generate_preview_task(self, dataset_id: str):
         upload_prefix = dataset.oss_path.rstrip("/") + "/"
 
         # ── 自动探测数据集根目录 ────────────────────────────────────────────────
-        all_keys = [obj.key for obj in oss2.ObjectIterator(bucket, prefix=upload_prefix)]
+        all_objs = list(oss2.ObjectIterator(bucket, prefix=upload_prefix))
+        all_keys = [obj.key for obj in all_objs]
         info_candidates = [k for k in all_keys if k.endswith("meta/info.json")]
         if not info_candidates:
             logger.warning(f"No meta/info.json under {upload_prefix}, skipping preview")
@@ -197,6 +198,16 @@ def generate_preview_task(self, dataset_id: str):
         info_key = min(info_candidates, key=lambda k: k.count("/"))
         prefix = info_key[: -len("meta/info.json")]
         logger.info(f"Preview root: {prefix}")
+
+        # 计算数据集原始文件总大小（仅统计 prefix 下的文件，排除 previews/ 目录）
+        dataset_size_bytes = sum(
+            obj.size for obj in all_objs
+            if obj.key.startswith(prefix) and not obj.key.startswith(f"previews/{dataset_id}/")
+        )
+        if dataset_size_bytes > 0 and not dataset.size_bytes:
+            dataset.size_bytes = dataset_size_bytes
+            db.commit()
+            logger.info(f"Preview: 数据集体积已更新 {dataset_size_bytes} bytes")
 
         info = json_lib.loads(bucket.get_object(info_key).read())
         fps = float(info.get("fps", 30))

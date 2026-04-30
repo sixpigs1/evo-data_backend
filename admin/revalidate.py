@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-手动触发数据集校验脚本
+手动触发数据集校验 / 预览生成脚本
 用法：
   # 对指定 upload_id 重新触发校验
   docker compose exec api python3 admin/revalidate.py <upload_id>
@@ -11,8 +11,11 @@
   # 列出最近 N 条失败的 upload
   docker compose exec api python3 admin/revalidate.py --list-failed [N]
 
-  # 对指定 dataset_id 重新触发预览生成
+  # 对指定 dataset_id 重新触发预览生成（异步，由 Celery Worker 执行）
   docker compose exec api python3 admin/revalidate.py --preview <dataset_id>
+
+  # 对指定 dataset_id 在本地同步运行预览生成（无需 Celery，直接执行并输出日志）
+  docker compose exec worker python3 admin/revalidate.py --preview-sync <dataset_id>
 """
 import sys
 import os
@@ -100,7 +103,7 @@ def cmd_revalidate(upload_id: str):
 
 
 def cmd_preview(dataset_id: str):
-    """对已有 dataset_id 重新触发预览生成任务"""
+    """对已有 dataset_id 重新触发预览生成任务（异步 Celery）"""
     from app.database import SessionLocal
     from app.models import Dataset
     from app.worker.tasks import generate_preview_task
@@ -121,6 +124,34 @@ def cmd_preview(dataset_id: str):
         db.close()
 
 
+def cmd_preview_sync(dataset_id: str):
+    """对已有 dataset_id 同步运行预览生成（在 worker 容器内直接执行，实时输出日志）"""
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
+
+    from app.database import SessionLocal
+    from app.models import Dataset
+    from app.worker.tasks import generate_preview_task
+
+    db = SessionLocal()
+    try:
+        d = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not d:
+            print(f"❌ 找不到 dataset_id={dataset_id}")
+            sys.exit(1)
+        print(f"dataset_id  : {d.id}")
+        print(f"name        : {d.name}")
+        print(f"oss_path    : {d.oss_path}")
+        print(f"has_preview : {d.has_preview}")
+        print("\n▶  开始同步执行 generate_preview_task ...\n")
+    finally:
+        db.close()
+
+    # 直接调用底层函数（跳过 Celery，同步执行，实时打印日志）
+    generate_preview_task.apply(args=[dataset_id])
+    print("\n✅ 预览生成完成。")
+
+
 if __name__ == "__main__":
     args = sys.argv[1:]
     if not args:
@@ -134,5 +165,7 @@ if __name__ == "__main__":
         cmd_list_failed(n)
     elif args[0] == "--preview" and len(args) >= 2:
         cmd_preview(args[1])
+    elif args[0] == "--preview-sync" and len(args) >= 2:
+        cmd_preview_sync(args[1])
     else:
         cmd_revalidate(args[0])
