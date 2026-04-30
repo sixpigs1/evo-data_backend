@@ -97,10 +97,10 @@ def get_presign_urls(
     try:
         import oss2
 
-    # 使用配置的公网 endpoint（前端浏览器需访问公网域名）
-    public_endpoint = getattr(settings, 'OSS_PUBLIC_ENDPOINT', settings.OSS_ENDPOINT)
-    auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
-    bucket = oss2.Bucket(auth, public_endpoint, settings.OSS_BUCKET_NAME)
+        # 使用配置的公网 endpoint（前端浏览器需访问公网域名）
+        public_endpoint = getattr(settings, 'OSS_PUBLIC_ENDPOINT', settings.OSS_ENDPOINT)
+        auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
+        bucket = oss2.Bucket(auth, public_endpoint, settings.OSS_BUCKET_NAME)
 
         urls = {}
         for rel_path in body.relative_paths:
