@@ -65,7 +65,7 @@ def get_sts_credentials(current_user: User = Depends(get_current_user)):
             upload_dir=upload_dir,
             upload_id=upload_id,
             bucket=settings.OSS_BUCKET_NAME,
-            endpoint=settings.OSS_ENDPOINT,
+            endpoint=getattr(settings, 'OSS_PUBLIC_ENDPOINT', settings.OSS_ENDPOINT),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"STS 签发失败: {str(e)}")
@@ -97,12 +97,10 @@ def get_presign_urls(
     try:
         import oss2
 
-        # 使用公网 endpoint（前端浏览器无法访问内网）
-        public_endpoint = settings.OSS_ENDPOINT.replace(
-            "-internal.aliyuncs.com", ".aliyuncs.com"
-        )
-        auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
-        bucket = oss2.Bucket(auth, public_endpoint, settings.OSS_BUCKET_NAME)
+    # 使用配置的公网 endpoint（前端浏览器需访问公网域名）
+    public_endpoint = getattr(settings, 'OSS_PUBLIC_ENDPOINT', settings.OSS_ENDPOINT)
+    auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
+    bucket = oss2.Bucket(auth, public_endpoint, settings.OSS_BUCKET_NAME)
 
         urls = {}
         for rel_path in body.relative_paths:

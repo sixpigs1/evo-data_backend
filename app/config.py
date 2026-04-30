@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     OSS_ACCESS_KEY_SECRET: str = ""
     OSS_BUCKET_NAME: str = "evo-data"
     OSS_ENDPOINT: str = "https://oss-cn-hangzhou.aliyuncs.com"
+    # 用于签名给浏览器的公网 URL（不能使用 internal 内网域名）
+    OSS_PUBLIC_ENDPOINT: str = "https://oss-cn-hangzhou.aliyuncs.com"
     OSS_BUCKET_DOMAIN: str = ""
 
     # STS
