@@ -413,5 +413,13 @@ def admin_list_all_datasets(
     for d in datasets:
         item = DatasetListItem.model_validate(d)
         item.owner_phone = _mask_phone(d.owner.phone) if d.owner else None
+        # 填充最新的关联 upload ID（仅 admin 接口）
+        latest_upload = (
+            db.query(Upload)
+            .filter(Upload.dataset_id == d.id)
+            .order_by(Upload.created_at.desc())
+            .first()
+        )
+        item.upload_id = str(latest_upload.id) if latest_upload else None
         result.append(item)
     return result

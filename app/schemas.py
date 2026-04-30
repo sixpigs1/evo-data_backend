@@ -301,6 +301,7 @@ class DatasetListItem(BaseModel):
     thumbnail_path: Optional[str] = None
     created_at: datetime
     owner_phone: Optional[str] = None  # 脱敏后手机号
+    upload_id: Optional[str] = None    # 关联的最新 upload ID（admin 视图填充）
 
     model_config = {"from_attributes": True}
 
