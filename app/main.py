@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth.router import router as auth_router
+from app.collection.router import router as collection_router
 from app.config import settings
 from app.database import Base, engine
 from app.datasets.router import router as datasets_router
@@ -32,6 +33,7 @@ app.add_middleware(
 
 # 路由注册
 app.include_router(auth_router)
+app.include_router(collection_router)
 app.include_router(datasets_router)
 app.include_router(sts_router)
 

@@ -3,8 +3,8 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Enum, ForeignKey,
-    Integer, String, Text, func, CHAR,
+    BigInteger, Boolean, CHAR, Column, Date, DateTime, Enum, ForeignKey,
+    Index, Integer, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.orm import relationship
 
@@ -35,6 +35,13 @@ class DatasetVersion(str, enum.Enum):
     unknown = "unknown"
 
 
+class CollectionRunStatus(str, enum.Enum):
+    active = "active"
+    finished = "finished"
+    interrupted = "interrupted"
+    failed = "failed"
+
+
 # ─── Users ────────────────────────────────────────────────────────────────────
 
 class User(Base):
@@ -53,6 +60,17 @@ class User(Base):
     datasets = relationship("Dataset", back_populates="owner")
     uploads = relationship("Upload", back_populates="user")
     contributions = relationship("Contribution", back_populates="user")
+    collection_tasks = relationship(
+        "CollectionTask",
+        back_populates="creator",
+        foreign_keys="CollectionTask.created_by_id",
+    )
+    collection_assignments = relationship(
+        "CollectionAssignment",
+        back_populates="user",
+        foreign_keys="CollectionAssignment.user_id",
+    )
+    collection_runs = relationship("CollectionRun", back_populates="user")
 
 
 # ─── Datasets ─────────────────────────────────────────────────────────────────
@@ -118,3 +136,99 @@ class Contribution(Base):
 
     user = relationship("User", back_populates="contributions")
     dataset = relationship("Dataset", back_populates="contributions")
+
+
+# ─── Collection Tasks ─────────────────────────────────────────────────────────
+
+class CollectionTask(Base):
+    __tablename__ = "collection_tasks"
+
+    id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+    task_prompt = Column(Text, nullable=False)
+    num_episodes = Column(Integer, default=10, nullable=False)
+    fps = Column(Integer, default=30, nullable=False)
+    episode_time_s = Column(Integer, default=300, nullable=False)
+    reset_time_s = Column(Integer, default=10, nullable=False)
+    use_cameras = Column(Boolean, default=True, nullable=False)
+    arms = Column(String(128), default="", nullable=False)
+    dataset_prefix = Column(String(64), default="rec", nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_by_id = Column(CHAR(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    creator = relationship("User", back_populates="collection_tasks", foreign_keys=[created_by_id])
+    assignments = relationship("CollectionAssignment", back_populates="task")
+    runs = relationship("CollectionRun", back_populates="task")
+
+
+class CollectionAssignment(Base):
+    __tablename__ = "collection_assignments"
+    __table_args__ = (
+        UniqueConstraint("user_id", "task_id", "target_date", name="uq_collection_assignment_user_task_date"),
+        Index("ix_collection_assignments_date_user", "target_date", "user_id"),
+    )
+
+    id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id = Column(CHAR(36), ForeignKey("collection_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_date = Column(Date, nullable=False, index=True)
+    target_seconds = Column(Integer, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_by_id = Column(CHAR(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="collection_assignments", foreign_keys=[user_id])
+    creator = relationship("User", foreign_keys=[created_by_id])
+    task = relationship("CollectionTask", back_populates="assignments")
+    runs = relationship("CollectionRun", back_populates="assignment")
+
+
+class CollectionDevice(Base):
+    __tablename__ = "collection_devices"
+
+    id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    name = Column(String(128), nullable=False, unique=True, index=True)
+    token_hash = Column(String(128), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    runs = relationship("CollectionRun", back_populates="device")
+
+
+class CollectionRun(Base):
+    __tablename__ = "collection_runs"
+    __table_args__ = (
+        Index("ix_collection_runs_user_status", "user_id", "status"),
+        Index("ix_collection_runs_assignment_status", "assignment_id", "status"),
+    )
+
+    id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    assignment_id = Column(CHAR(36), ForeignKey("collection_assignments.id", ondelete="SET NULL"), nullable=True, index=True)
+    task_id = Column(CHAR(36), ForeignKey("collection_tasks.id", ondelete="SET NULL"), nullable=True, index=True)
+    device_id = Column(CHAR(36), ForeignKey("collection_devices.id", ondelete="SET NULL"), nullable=True, index=True)
+    dataset_name = Column(String(256), nullable=False, index=True)
+    status = Column(Enum(CollectionRunStatus, values_callable=lambda x: [e.value for e in x]), default=CollectionRunStatus.active, nullable=False)
+    started_at = Column(DateTime, server_default=func.now(), nullable=False)
+    last_heartbeat_at = Column(DateTime, nullable=True)
+    stopped_at = Column(DateTime, nullable=True)
+    saved_episodes = Column(Integer, default=0, nullable=False)
+    total_frames = Column(Integer, nullable=True)
+    fps = Column(Integer, nullable=True)
+    duration_seconds = Column(Integer, default=0, nullable=False)
+    error_message = Column(Text, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="collection_runs")
+    assignment = relationship("CollectionAssignment", back_populates="runs")
+    task = relationship("CollectionTask", back_populates="runs")
+    device = relationship("CollectionDevice", back_populates="runs")
