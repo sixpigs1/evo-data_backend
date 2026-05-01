@@ -550,13 +550,10 @@ def admin_progress(
     db: Session = Depends(get_db),
 ):
     _require_admin(current_user)
-    target_date = target_date or _today()
-    assignments = (
-        db.query(CollectionAssignment)
-        .filter(CollectionAssignment.target_date == target_date)
-        .order_by(CollectionAssignment.created_at.desc())
-        .all()
-    )
+    query = db.query(CollectionAssignment)
+    if target_date is not None:
+        query = query.filter(CollectionAssignment.target_date == target_date)
+    assignments = query.order_by(CollectionAssignment.target_date.desc(), CollectionAssignment.created_at.desc()).all()
     items: list[AdminProgressItem] = []
     for assignment in assignments:
         payload = _assignment_response(assignment, db).model_dump()
