@@ -3,23 +3,19 @@
 from __future__ import annotations
 
 import json
-import secrets
 import uuid
 from datetime import date, datetime
 from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.auth.utils import hash_password, verify_password
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import (
     CollectionAssignment,
-    CollectionDevice,
     CollectionRun,
     CollectionRunStatus,
     CollectionTask,
@@ -54,25 +50,17 @@ def _validate_phone(value: str) -> str:
     return value
 
 
+def _user_level(user: User) -> str:
+    return user.level.value if hasattr(user.level, "value") else str(user.level)
+
+
+def _run_status(run: CollectionRun) -> str:
+    return run.status.value if hasattr(run.status, "value") else str(run.status)
+
+
 def _require_admin(user: User) -> None:
-    if user.level != "admin":
+    if _user_level(user) != "admin":
         raise HTTPException(status_code=403, detail="仅管理员可访问")
-
-
-def _require_device(
-    device_id: str = Header(..., alias="X-RoboClaw-Device-Id"),
-    device_token: str = Header(..., alias="X-RoboClaw-Device-Token"),
-    db: Session = Depends(get_db),
-) -> CollectionDevice:
-    device = db.query(CollectionDevice).filter(CollectionDevice.id == device_id).first()
-    if not device or not device.is_active:
-        raise HTTPException(status_code=403, detail="设备未注册或已禁用")
-    if not verify_password(device_token, device.token_hash):
-        raise HTTPException(status_code=403, detail="设备令牌无效")
-    device.last_seen_at = datetime.utcnow()
-    db.commit()
-    db.refresh(device)
-    return device
 
 
 def _task_payload(task: CollectionTask) -> dict[str, Any]:
@@ -210,7 +198,7 @@ class AssignmentCreate(BaseModel):
 
 class AssignmentResponse(BaseModel):
     id: str
-    user_id: str
+    user_id: Optional[str] = None
     phone: str
     task_id: str
     task_name: str
@@ -222,36 +210,11 @@ class AssignmentResponse(BaseModel):
     task_params: dict[str, Any]
 
 
-class DeviceCreate(BaseModel):
-    name: str
-    metadata: Optional[dict[str, Any]] = None
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("设备名称不能为空")
-        return value
-
-
-class DeviceResponse(BaseModel):
-    id: str
-    name: str
-    is_active: bool
-    last_seen_at: Optional[datetime] = None
-    metadata: Optional[dict[str, Any]] = None
-    created_at: datetime
-
-
-class DeviceCreatedResponse(DeviceResponse):
-    token: str
-
-
 class RunStartRequest(BaseModel):
     assignment_id: str
     dataset_name: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
+    client_info: Optional[dict[str, Any]] = None
 
 
 class RunHeartbeatRequest(BaseModel):
@@ -260,6 +223,7 @@ class RunHeartbeatRequest(BaseModel):
     fps: Optional[int] = None
     duration_seconds: Optional[int] = None
     metadata: Optional[dict[str, Any]] = None
+    client_info: Optional[dict[str, Any]] = None
 
 
 class RunFinishRequest(RunHeartbeatRequest):
@@ -271,7 +235,6 @@ class RunResponse(BaseModel):
     id: str
     assignment_id: Optional[str]
     task_id: Optional[str]
-    device_id: Optional[str]
     dataset_name: str
     status: str
     started_at: datetime
@@ -281,6 +244,8 @@ class RunResponse(BaseModel):
     fps: Optional[int] = None
     duration_seconds: int
     error_message: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+    client_info: Optional[dict[str, Any]] = None
     task_params: Optional[dict[str, Any]] = None
 
     model_config = {"from_attributes": True}
@@ -292,12 +257,12 @@ class AdminProgressItem(AssignmentResponse):
 
 def _assignment_response(assignment: CollectionAssignment, db: Session) -> AssignmentResponse:
     runs = db.query(CollectionRun).filter(CollectionRun.assignment_id == assignment.id).all()
-    completed = sum(run.duration_seconds or 0 for run in runs if run.status != CollectionRunStatus.failed)
-    active_run = next((run for run in runs if run.status == CollectionRunStatus.active), None)
+    completed = sum(run.duration_seconds or 0 for run in runs if _run_status(run) != "failed")
+    active_run = next((run for run in runs if _run_status(run) == "active"), None)
     return AssignmentResponse(
         id=str(assignment.id),
-        user_id=str(assignment.user_id),
-        phone=assignment.user.phone,
+        user_id=str(assignment.user_id) if assignment.user_id else None,
+        phone=assignment.phone,
         task_id=str(assignment.task_id),
         task_name=assignment.task.name,
         target_date=assignment.target_date,
@@ -314,9 +279,8 @@ def _run_response(run: CollectionRun) -> RunResponse:
         id=str(run.id),
         assignment_id=str(run.assignment_id) if run.assignment_id else None,
         task_id=str(run.task_id) if run.task_id else None,
-        device_id=str(run.device_id) if run.device_id else None,
         dataset_name=run.dataset_name,
-        status=run.status.value if hasattr(run.status, "value") else str(run.status),
+        status=_run_status(run),
         started_at=run.started_at,
         stopped_at=run.stopped_at,
         saved_episodes=run.saved_episodes,
@@ -324,8 +288,17 @@ def _run_response(run: CollectionRun) -> RunResponse:
         fps=run.fps,
         duration_seconds=run.duration_seconds,
         error_message=run.error_message,
+        metadata=_json_loads(run.metadata_json),
+        client_info=_json_loads(run.client_info_json),
         task_params=_task_payload(run.task) if run.task else None,
     )
+
+
+def _bind_assignment_to_user(assignment: CollectionAssignment, user: User) -> bool:
+    if assignment.user_id == user.id:
+        return False
+    assignment.user_id = user.id
+    return True
 
 
 @router.get("/my/assignments", response_model=list[AssignmentResponse])
@@ -339,7 +312,7 @@ def my_assignments(
         db.query(CollectionAssignment)
         .join(CollectionTask)
         .filter(
-            CollectionAssignment.user_id == current_user.id,
+            CollectionAssignment.phone == current_user.phone,
             CollectionAssignment.target_date == target_date,
             CollectionAssignment.is_active == True,
             CollectionTask.is_active == True,
@@ -347,6 +320,11 @@ def my_assignments(
         .order_by(CollectionTask.name.asc())
         .all()
     )
+    changed = any(_bind_assignment_to_user(assignment, current_user) for assignment in assignments)
+    if changed:
+        db.commit()
+        for assignment in assignments:
+            db.refresh(assignment)
     return [_assignment_response(assignment, db) for assignment in assignments]
 
 
@@ -354,7 +332,6 @@ def my_assignments(
 def start_run(
     body: RunStartRequest,
     current_user: User = Depends(get_current_user),
-    device: CollectionDevice = Depends(_require_device),
     db: Session = Depends(get_db),
 ):
     db.query(User.id).filter(User.id == current_user.id).with_for_update().one()
@@ -362,7 +339,7 @@ def start_run(
         db.query(CollectionAssignment)
         .filter(
             CollectionAssignment.id == body.assignment_id,
-            CollectionAssignment.user_id == current_user.id,
+            CollectionAssignment.phone == current_user.phone,
             CollectionAssignment.target_date == _today(),
             CollectionAssignment.is_active == True,
         )
@@ -382,6 +359,7 @@ def start_run(
     if active:
         raise HTTPException(status_code=409, detail="当前用户已有进行中的采集")
 
+    _bind_assignment_to_user(assignment, current_user)
     run_id = str(uuid.uuid4())
     dataset_name = body.dataset_name or f"{assignment.task.dataset_prefix}_{assignment.target_date:%Y%m%d}_{run_id[:8]}"
     run = CollectionRun(
@@ -389,12 +367,12 @@ def start_run(
         user_id=current_user.id,
         assignment_id=assignment.id,
         task_id=assignment.task_id,
-        device_id=device.id,
         dataset_name=dataset_name,
         status=CollectionRunStatus.active,
         last_heartbeat_at=datetime.utcnow(),
         fps=assignment.task.fps,
         metadata_json=_json_dumps(body.metadata),
+        client_info_json=_json_dumps(body.client_info),
     )
     db.add(run)
     db.commit()
@@ -407,7 +385,6 @@ def heartbeat_run(
     run_id: str,
     body: RunHeartbeatRequest,
     current_user: User = Depends(get_current_user),
-    device: CollectionDevice = Depends(_require_device),
     db: Session = Depends(get_db),
 ):
     run = (
@@ -415,7 +392,6 @@ def heartbeat_run(
         .filter(
             CollectionRun.id == run_id,
             CollectionRun.user_id == current_user.id,
-            CollectionRun.device_id == device.id,
             CollectionRun.status == CollectionRunStatus.active,
         )
         .first()
@@ -435,7 +411,6 @@ def finish_run(
     run_id: str,
     body: RunFinishRequest,
     current_user: User = Depends(get_current_user),
-    device: CollectionDevice = Depends(_require_device),
     db: Session = Depends(get_db),
 ):
     run = (
@@ -443,7 +418,6 @@ def finish_run(
         .filter(
             CollectionRun.id == run_id,
             CollectionRun.user_id == current_user.id,
-            CollectionRun.device_id == device.id,
             CollectionRun.status == CollectionRunStatus.active,
         )
         .first()
@@ -470,6 +444,8 @@ def _update_run_metrics(run: CollectionRun, body: RunHeartbeatRequest) -> None:
         run.fps = max(body.fps, 0)
     if body.metadata is not None:
         run.metadata_json = _json_dumps(body.metadata)
+    if body.client_info is not None:
+        run.client_info_json = _json_dumps(body.client_info)
     run.duration_seconds = _run_duration(
         total_frames=run.total_frames,
         fps=run.fps,
@@ -536,27 +512,25 @@ def admin_upsert_assignment(
     task = db.query(CollectionTask).filter(CollectionTask.id == body.task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    user = db.query(User).filter(User.phone == body.phone).first()
-    if not user:
-        user = User(phone=body.phone)
-        db.add(user)
-        db.flush()
 
+    user = db.query(User).filter(User.phone == body.phone).first()
     assignment = (
         db.query(CollectionAssignment)
         .filter(
-            CollectionAssignment.user_id == user.id,
+            CollectionAssignment.phone == body.phone,
             CollectionAssignment.task_id == task.id,
             CollectionAssignment.target_date == body.target_date,
         )
         .first()
     )
     if assignment:
+        assignment.user_id = user.id if user else None
         assignment.target_seconds = body.target_seconds
         assignment.is_active = body.is_active
     else:
         assignment = CollectionAssignment(
-            user_id=user.id,
+            phone=body.phone,
+            user_id=user.id if user else None,
             task_id=task.id,
             target_date=body.target_date,
             target_seconds=body.target_seconds,
@@ -586,53 +560,6 @@ def admin_progress(
     items: list[AdminProgressItem] = []
     for assignment in assignments:
         payload = _assignment_response(assignment, db).model_dump()
-        payload["user_nickname"] = assignment.user.nickname
+        payload["user_nickname"] = assignment.user.nickname if assignment.user else None
         items.append(AdminProgressItem(**payload))
     return items
-
-
-@router.get("/admin/devices", response_model=list[DeviceResponse])
-def admin_list_devices(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    _require_admin(current_user)
-    devices = db.query(CollectionDevice).order_by(CollectionDevice.created_at.desc()).all()
-    return [
-        DeviceResponse(
-            id=str(device.id),
-            name=device.name,
-            is_active=device.is_active,
-            last_seen_at=device.last_seen_at,
-            metadata=_json_loads(device.metadata_json),
-            created_at=device.created_at,
-        )
-        for device in devices
-    ]
-
-
-@router.post("/admin/devices", response_model=DeviceCreatedResponse)
-def admin_create_device(
-    body: DeviceCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    _require_admin(current_user)
-    token = secrets.token_urlsafe(32)
-    device = CollectionDevice(
-        name=body.name,
-        token_hash=hash_password(token),
-        metadata_json=_json_dumps(body.metadata),
-    )
-    db.add(device)
-    db.commit()
-    db.refresh(device)
-    return DeviceCreatedResponse(
-        id=str(device.id),
-        name=device.name,
-        is_active=device.is_active,
-        last_seen_at=device.last_seen_at,
-        metadata=_json_loads(device.metadata_json),
-        created_at=device.created_at,
-        token=token,
-    )

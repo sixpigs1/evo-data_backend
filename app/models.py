@@ -167,12 +167,13 @@ class CollectionTask(Base):
 class CollectionAssignment(Base):
     __tablename__ = "collection_assignments"
     __table_args__ = (
-        UniqueConstraint("user_id", "task_id", "target_date", name="uq_collection_assignment_user_task_date"),
-        Index("ix_collection_assignments_date_user", "target_date", "user_id"),
+        UniqueConstraint("phone", "task_id", "target_date", name="uq_collection_assignment_phone_task_date"),
+        Index("ix_collection_assignments_date_phone", "target_date", "phone"),
     )
 
     id = Column(CHAR(36), primary_key=True, default=new_uuid)
-    user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    phone = Column(String(20), nullable=False, index=True)
+    user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     task_id = Column(CHAR(36), ForeignKey("collection_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
     target_date = Column(Date, nullable=False, index=True)
     target_seconds = Column(Integer, nullable=False)
@@ -187,21 +188,6 @@ class CollectionAssignment(Base):
     runs = relationship("CollectionRun", back_populates="assignment")
 
 
-class CollectionDevice(Base):
-    __tablename__ = "collection_devices"
-
-    id = Column(CHAR(36), primary_key=True, default=new_uuid)
-    name = Column(String(128), nullable=False, unique=True, index=True)
-    token_hash = Column(String(128), nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
-    last_seen_at = Column(DateTime, nullable=True)
-    metadata_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    runs = relationship("CollectionRun", back_populates="device")
-
-
 class CollectionRun(Base):
     __tablename__ = "collection_runs"
     __table_args__ = (
@@ -213,7 +199,6 @@ class CollectionRun(Base):
     user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     assignment_id = Column(CHAR(36), ForeignKey("collection_assignments.id", ondelete="SET NULL"), nullable=True, index=True)
     task_id = Column(CHAR(36), ForeignKey("collection_tasks.id", ondelete="SET NULL"), nullable=True, index=True)
-    device_id = Column(CHAR(36), ForeignKey("collection_devices.id", ondelete="SET NULL"), nullable=True, index=True)
     dataset_name = Column(String(256), nullable=False, index=True)
     status = Column(Enum(CollectionRunStatus, values_callable=lambda x: [e.value for e in x]), default=CollectionRunStatus.active, nullable=False)
     started_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -225,10 +210,10 @@ class CollectionRun(Base):
     duration_seconds = Column(Integer, default=0, nullable=False)
     error_message = Column(Text, nullable=True)
     metadata_json = Column(Text, nullable=True)
+    client_info_json = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="collection_runs")
     assignment = relationship("CollectionAssignment", back_populates="runs")
     task = relationship("CollectionTask", back_populates="runs")
-    device = relationship("CollectionDevice", back_populates="runs")
