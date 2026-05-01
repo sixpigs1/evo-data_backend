@@ -152,7 +152,6 @@ class CollectionTask(Base):
     episode_time_s = Column(Integer, default=300, nullable=False)
     reset_time_s = Column(Integer, default=10, nullable=False)
     use_cameras = Column(Boolean, default=True, nullable=False)
-    arms = Column(String(128), default="", nullable=False)
     dataset_prefix = Column(String(64), default="rec", nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_by_id = Column(CHAR(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)

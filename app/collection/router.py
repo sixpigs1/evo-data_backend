@@ -31,6 +31,12 @@ def _today() -> date:
     return datetime.now(TZ_SHANGHAI).date()
 
 
+def _task_name_from_prompt(prompt: str) -> str:
+    compact = " ".join(prompt.strip().split())
+    prefix = compact[:24] or "采集任务"
+    return f"{prefix}-{datetime.now(TZ_SHANGHAI):%Y%m%d%H%M%S}-{uuid.uuid4().hex[:6]}"
+
+
 def _json_dumps(value: dict[str, Any] | None) -> str | None:
     if value is None:
         return None
@@ -71,7 +77,6 @@ def _task_payload(task: CollectionTask) -> dict[str, Any]:
         "episode_time_s": task.episode_time_s,
         "reset_time_s": task.reset_time_s,
         "use_cameras": task.use_cameras,
-        "arms": task.arms,
     }
 
 
@@ -93,7 +98,7 @@ def _run_duration(
 
 
 class CollectionTaskBase(BaseModel):
-    name: str
+    name: Optional[str] = None
     description: Optional[str] = None
     task_prompt: str
     num_episodes: int = 10
@@ -101,17 +106,24 @@ class CollectionTaskBase(BaseModel):
     episode_time_s: int = 300
     reset_time_s: int = 10
     use_cameras: bool = True
-    arms: str = ""
     dataset_prefix: str = "rec"
     is_active: bool = True
 
-    @field_validator("name", "task_prompt", "dataset_prefix")
+    @field_validator("task_prompt", "dataset_prefix")
     @classmethod
     def validate_required_text(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("不能为空")
         return value
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
     @field_validator("num_episodes", "fps", "episode_time_s")
     @classmethod
@@ -141,16 +153,20 @@ class CollectionTaskUpdate(BaseModel):
     episode_time_s: Optional[int] = None
     reset_time_s: Optional[int] = None
     use_cameras: Optional[bool] = None
-    arms: Optional[str] = None
     dataset_prefix: Optional[str] = None
     is_active: Optional[bool] = None
 
-    @field_validator("name", "task_prompt", "dataset_prefix")
+    @field_validator("task_prompt", "dataset_prefix")
     @classmethod
     def validate_optional_required_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return CollectionTaskBase.validate_required_text(value)
+
+    @field_validator("name")
+    @classmethod
+    def validate_optional_name(cls, value: str | None) -> str | None:
+        return CollectionTaskBase.validate_optional_name(value)
 
     @field_validator("num_episodes", "fps", "episode_time_s")
     @classmethod
@@ -169,6 +185,7 @@ class CollectionTaskUpdate(BaseModel):
 
 class CollectionTaskResponse(CollectionTaskBase):
     id: str
+    name: str
     created_by_id: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -475,7 +492,9 @@ def admin_create_task(
     db: Session = Depends(get_db),
 ):
     _require_admin(current_user)
-    task = CollectionTask(**body.model_dump(), created_by_id=current_user.id)
+    payload = body.model_dump()
+    payload["name"] = payload["name"] or _task_name_from_prompt(body.task_prompt)
+    task = CollectionTask(**payload, created_by_id=current_user.id)
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -494,6 +513,8 @@ def admin_update_task(
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     for key, value in body.model_dump(exclude_unset=True).items():
+        if key == "name" and value is None:
+            continue
         if isinstance(value, str):
             value = value.strip()
         setattr(task, key, value)

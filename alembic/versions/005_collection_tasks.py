@@ -25,7 +25,6 @@ def upgrade():
         sa.Column('episode_time_s', sa.Integer(), nullable=False),
         sa.Column('reset_time_s', sa.Integer(), nullable=False),
         sa.Column('use_cameras', sa.Boolean(), nullable=False),
-        sa.Column('arms', sa.String(128), nullable=False),
         sa.Column('dataset_prefix', sa.String(64), nullable=False),
         sa.Column('is_active', sa.Boolean(), nullable=False),
         sa.Column('created_by_id', sa.CHAR(36), nullable=True),
