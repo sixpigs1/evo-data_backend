@@ -24,7 +24,8 @@ from app.models import (
 
 router = APIRouter(prefix="/collection", tags=["collection"])
 
-TZ_SHANGHAI = ZoneInfo("Asia/Shanghai")
+COLLECTION_TIMEZONE = "Asia/Shanghai"
+TZ_SHANGHAI = ZoneInfo(COLLECTION_TIMEZONE)
 
 
 def _today() -> date:
@@ -272,6 +273,11 @@ class AdminProgressItem(AssignmentResponse):
     user_nickname: Optional[str] = None
 
 
+class CollectionTodayResponse(BaseModel):
+    today: date
+    timezone: str
+
+
 def _assignment_response(assignment: CollectionAssignment, db: Session) -> AssignmentResponse:
     runs = db.query(CollectionRun).filter(CollectionRun.assignment_id == assignment.id).all()
     completed = sum(run.duration_seconds or 0 for run in runs if _run_status(run) != "failed")
@@ -339,6 +345,11 @@ def _require_startable_assignment(
     if not assignment.task.is_active:
         raise HTTPException(status_code=409, detail="该任务已停用")
     return assignment
+
+
+@router.get("/today", response_model=CollectionTodayResponse)
+def collection_today(current_user: User = Depends(get_current_user)):
+    return CollectionTodayResponse(today=_today(), timezone=COLLECTION_TIMEZONE)
 
 
 @router.get("/my/assignments", response_model=list[AssignmentResponse])
