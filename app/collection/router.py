@@ -318,6 +318,29 @@ def _bind_assignment_to_user(assignment: CollectionAssignment, user: User) -> bo
     return True
 
 
+def _require_startable_assignment(
+    assignment: CollectionAssignment | None,
+    user: User,
+    today: date,
+) -> CollectionAssignment:
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="任务分配不存在")
+    if assignment.phone != user.phone:
+        raise HTTPException(status_code=403, detail="该任务不属于当前登录手机号")
+    if assignment.target_date != today:
+        raise HTTPException(
+            status_code=409,
+            detail=f"该任务日期是 {assignment.target_date.isoformat()}，只能开始今天 {today.isoformat()} 的任务",
+        )
+    if not assignment.is_active:
+        raise HTTPException(status_code=409, detail="该任务分配已停用")
+    if not assignment.task:
+        raise HTTPException(status_code=409, detail="该任务不存在或已被删除")
+    if not assignment.task.is_active:
+        raise HTTPException(status_code=409, detail="该任务已停用")
+    return assignment
+
+
 @router.get("/my/assignments", response_model=list[AssignmentResponse])
 def my_assignments(
     target_date: date | None = Query(None),
@@ -351,19 +374,10 @@ def start_run(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    today = _today()
     db.query(User.id).filter(User.id == current_user.id).with_for_update().one()
-    assignment = (
-        db.query(CollectionAssignment)
-        .filter(
-            CollectionAssignment.id == body.assignment_id,
-            CollectionAssignment.phone == current_user.phone,
-            CollectionAssignment.target_date == _today(),
-            CollectionAssignment.is_active == True,
-        )
-        .first()
-    )
-    if not assignment or not assignment.task or not assignment.task.is_active:
-        raise HTTPException(status_code=404, detail="任务分配不存在或不可用")
+    assignment = db.query(CollectionAssignment).filter(CollectionAssignment.id == body.assignment_id).first()
+    assignment = _require_startable_assignment(assignment, current_user, today)
 
     active = (
         db.query(CollectionRun)
@@ -378,7 +392,7 @@ def start_run(
 
     _bind_assignment_to_user(assignment, current_user)
     run_id = str(uuid.uuid4())
-    dataset_name = body.dataset_name or f"{assignment.task.dataset_prefix}_{assignment.target_date:%Y%m%d}_{run_id[:8]}"
+    dataset_name = body.dataset_name or f"{assignment.task.dataset_prefix}_{today:%Y%m%d}_{run_id[:8]}"
     run = CollectionRun(
         id=run_id,
         user_id=current_user.id,
