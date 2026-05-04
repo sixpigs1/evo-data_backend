@@ -28,6 +28,20 @@ def active_memberships(db: Session, user: User) -> list[Membership]:
     )
 
 
+def account_memberships(db: Session, user: User) -> list[Membership]:
+    return (
+        db.query(Membership)
+        .join(Organization)
+        .filter(
+            Membership.user_id == user.id,
+            Membership.status.in_((MembershipStatus.active, MembershipStatus.invited)),
+            Organization.status == OrganizationStatus.active,
+        )
+        .order_by(Membership.created_at.asc())
+        .all()
+    )
+
+
 def current_membership(db: Session, user: User) -> Membership | None:
     memberships = active_memberships(db, user)
     return memberships[0] if memberships else None

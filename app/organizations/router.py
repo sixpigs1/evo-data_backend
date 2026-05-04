@@ -53,6 +53,10 @@ class MemberUpdateRequest(BaseModel):
     status: Optional[MemberStatus] = None
 
 
+class MembershipInvitationResponseRequest(BaseModel):
+    status: Literal["active", "disabled"]
+
+
 def _enum_value(value):
     return value.value if hasattr(value, "value") else value
 
@@ -140,10 +144,12 @@ def upsert_member(
         db.query(Membership)
         .filter(
             Membership.user_id == user.id,
-            Membership.org_id == actor_membership.org_id,
         )
         .first()
     )
+    if membership is not None and membership.org_id != actor_membership.org_id:
+        raise HTTPException(status_code=409, detail="该用户已属于其他组织")
+
     _ensure_invite_role(actor_membership, body.role_code, membership)
     if membership is None:
         membership = Membership(
@@ -151,16 +157,17 @@ def upsert_member(
             user_id=user.id,
             org_id=actor_membership.org_id,
             role_code=MembershipRole(body.role_code),
-            status=MembershipStatus.active,
+            status=MembershipStatus.invited,
             invited_by_user_id=current_user.id,
-            joined_at=func.now(),
+            joined_at=None,
         )
         db.add(membership)
     else:
         membership.role_code = MembershipRole(body.role_code)
-        membership.status = MembershipStatus.active
         membership.invited_by_user_id = current_user.id
-        membership.joined_at = membership.joined_at or func.now()
+        if membership.status != MembershipStatus.active:
+            membership.status = MembershipStatus.invited
+            membership.joined_at = None
     db.commit()
     db.refresh(membership)
     return _member_response(membership)
@@ -192,6 +199,33 @@ def update_member(
     membership.status = next_status
     if next_status == MembershipStatus.active and membership.joined_at is None:
         membership.joined_at = func.now()
+    db.commit()
+    db.refresh(membership)
+    return _member_response(membership)
+
+
+@router.patch("/memberships/{membership_id}/response", response_model=OrganizationMemberResponse)
+def respond_membership_invitation(
+    membership_id: str,
+    body: MembershipInvitationResponseRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    membership = (
+        db.query(Membership)
+        .filter(
+            Membership.id == membership_id,
+            Membership.user_id == current_user.id,
+        )
+        .first()
+    )
+    if membership is None:
+        raise HTTPException(status_code=404, detail="邀请不存在")
+    if membership.status != MembershipStatus.invited:
+        raise HTTPException(status_code=409, detail="邀请已处理")
+
+    membership.status = MembershipStatus(body.status)
+    membership.joined_at = func.now() if membership.status == MembershipStatus.active else None
     db.commit()
     db.refresh(membership)
     return _member_response(membership)

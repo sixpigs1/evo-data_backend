@@ -129,13 +129,14 @@ class Organization(Base):
 class Membership(Base):
     __tablename__ = "memberships"
     __table_args__ = (
+        UniqueConstraint("user_id", name="uq_membership_user"),
         UniqueConstraint("user_id", "org_id", name="uq_membership_user_org"),
         Index("ix_memberships_user_status", "user_id", "status"),
         Index("ix_memberships_org_status_role", "org_id", "status", "role_code"),
     )
 
     id = Column(CHAR(36), primary_key=True, default=new_uuid)
-    user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     org_id = Column(CHAR(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     role_code = Column(
         Enum(MembershipRole, values_callable=lambda x: [e.value for e in x]),
