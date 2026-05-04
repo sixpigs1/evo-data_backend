@@ -15,7 +15,7 @@ router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 RoleCode = Literal["owner", "admin", "member"]
 InviteRoleCode = Literal["admin", "member"]
-MemberStatus = Literal["active", "disabled"]
+MemberStatus = Literal["active", "invited", "disabled"]
 
 
 class OrganizationMemberResponse(BaseModel):
