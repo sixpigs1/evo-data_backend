@@ -19,6 +19,7 @@ from app.models import (
     CollectionRun,
     CollectionRunStatus,
     CollectionTask,
+    PlatformRole,
     User,
 )
 
@@ -57,16 +58,12 @@ def _validate_phone(value: str) -> str:
     return value
 
 
-def _user_level(user: User) -> str:
-    return user.level.value if hasattr(user.level, "value") else str(user.level)
-
-
 def _run_status(run: CollectionRun) -> str:
     return run.status.value if hasattr(run.status, "value") else str(run.status)
 
 
 def _require_admin(user: User) -> None:
-    if _user_level(user) != "admin":
+    if user.platform_role != PlatformRole.system_admin:
         raise HTTPException(status_code=403, detail="仅管理员可访问")
 
 

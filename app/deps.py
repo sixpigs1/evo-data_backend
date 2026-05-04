@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.utils import decode_token
 from app.database import get_db
-from app.models import User
+from app.models import User, UserStatus
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -22,7 +22,7 @@ def get_current_user(
 
     user_id = payload.get("sub")
     user = db.query(User).filter(User.id == user_id).first()
-    if not user or not user.is_active:
+    if not user or user.status == UserStatus.disabled:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
 
     return user

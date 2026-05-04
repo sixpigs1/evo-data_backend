@@ -236,8 +236,8 @@ class UserInfo(BaseModel):
     id: str
     phone: str
     nickname: Optional[str]
-    level: str
-    rank: int
+    status: str
+    platform_role: str
     has_password: bool = False   # 是否已设置密码（前端判断是否显示"设置密码"入口）
     created_at: datetime
 

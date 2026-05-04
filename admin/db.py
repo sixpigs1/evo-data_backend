@@ -11,9 +11,9 @@ RDS MySQL 运维工具
     uploads                   列出最近上传记录
     stats                     数据库统计总览
 
-    set-admin <phone>         将用户设为 admin
-    set-level <phone> <level> 设置用户等级 (normal/contributor/admin)
-    set-active <phone> <0|1>  启用/禁用用户
+    set-admin <phone>         将用户设为 system_admin
+    set-role <phone> <role>   设置平台角色 (user/system_admin)
+    set-status <phone> <status> 设置账号状态 (active/disabled)
     clear-password <phone>    清空用户密码（强制短信登录）
 
     set-public <dataset_id> <0|1>   设置数据集公开状态
@@ -58,13 +58,13 @@ def cmd_users():
     section("所有用户")
     with engine.connect() as conn:
         rows = conn.execute(text("""
-            SELECT id, phone, level, `rank`, is_active, created_at
+            SELECT id, phone, status, platform_role, created_at
             FROM users ORDER BY created_at DESC
         """)).fetchall()
-    print(f"{'手机号':15}  {'等级':12}  {'积分':6}  {'激活':4}  {'创建时间':20}  ID")
+    print(f"{'手机号':15}  {'状态':10}  {'平台角色':14}  {'创建时间':20}  ID")
     hr("-")
     for r in rows:
-        print(f"{r.phone:15}  {r.level:12}  {r[3]:<6}  {'✓' if r.is_active else '✗':4}  {str(r.created_at)[:19]:20}  {r.id}")
+        print(f"{r.phone:15}  {r.status:10}  {r.platform_role:14}  {str(r.created_at)[:19]:20}  {r.id}")
     print(f"\n共 {len(rows)} 个用户")
 
 
@@ -152,9 +152,9 @@ def cmd_stats():
             return conn.execute(text(sql)).scalar() or 0
 
         n_users      = scalar("SELECT COUNT(*) FROM users")
-        n_admin      = scalar("SELECT COUNT(*) FROM users WHERE level='admin'")
-        n_contrib    = scalar("SELECT COUNT(*) FROM users WHERE level='contributor'")
-        n_normal     = scalar("SELECT COUNT(*) FROM users WHERE level='normal'")
+        n_admin      = scalar("SELECT COUNT(*) FROM users WHERE platform_role='system_admin'")
+        n_active     = scalar("SELECT COUNT(*) FROM users WHERE status='active'")
+        n_disabled   = scalar("SELECT COUNT(*) FROM users WHERE status='disabled'")
         n_datasets   = scalar("SELECT COUNT(*) FROM datasets")
         n_public     = scalar("SELECT COUNT(*) FROM datasets WHERE is_public=1")
         n_preview    = scalar("SELECT COUNT(*) FROM datasets WHERE has_preview=1")
@@ -166,9 +166,9 @@ def cmd_stats():
         total_eps    = scalar("SELECT SUM(total_episodes) FROM datasets")
 
     print(f"  用户总数        : {n_users}")
-    print(f"  管理员数        : {n_admin}")
-    print(f"  贡献者数        : {n_contrib}")
-    print(f"  普通用户数      : {n_normal}")
+    print(f"  系统管理员数    : {n_admin}")
+    print(f"  启用账号        : {n_active}")
+    print(f"  禁用账号        : {n_disabled}")
     print()
     print(f"  数据集总数      : {n_datasets}")
     print(f"  公开数据集      : {n_public}")
@@ -188,33 +188,34 @@ def cmd_stats():
 def cmd_set_admin(phone):
     with engine.begin() as conn:
         r = conn.execute(text(
-            "UPDATE users SET level='admin', `rank`=100 WHERE phone=:p"
+            "UPDATE users SET platform_role='system_admin' WHERE phone=:p"
         ), {"p": phone})
     if r.rowcount:
-        print(f"✅ {phone} 已设为 admin")
+        print(f"✅ {phone} 已设为 system_admin")
     else:
         print(f"❌ 用户 {phone} 不存在")
 
 
-def cmd_set_level(phone, level):
-    if level not in ("normal", "contributor", "admin"):
-        print("❌ level 必须是 normal / contributor / admin")
+def cmd_set_role(phone, role):
+    if role not in ("user", "system_admin"):
+        print("❌ role 必须是 user / system_admin")
         return
     with engine.begin() as conn:
         r = conn.execute(text(
-            "UPDATE users SET level=:level WHERE phone=:p"
-        ), {"level": level, "p": phone})
-    print(f"✅ {phone} 等级已设为 {level}" if r.rowcount else f"❌ 用户 {phone} 不存在")
+            "UPDATE users SET platform_role=:role WHERE phone=:p"
+        ), {"role": role, "p": phone})
+    print(f"✅ {phone} 平台角色已设为 {role}" if r.rowcount else f"❌ 用户 {phone} 不存在")
 
 
-def cmd_set_active(phone, active):
-    val = 1 if str(active) in ("1", "true", "True") else 0
+def cmd_set_status(phone, account_status):
+    if account_status not in ("active", "disabled"):
+        print("❌ status 必须是 active / disabled")
+        return
     with engine.begin() as conn:
         r = conn.execute(text(
-            "UPDATE users SET is_active=:v WHERE phone=:p"
-        ), {"v": val, "p": phone})
-    status = "启用" if val else "禁用"
-    print(f"✅ 用户 {phone} 已{status}" if r.rowcount else f"❌ 用户 {phone} 不存在")
+            "UPDATE users SET status=:status WHERE phone=:p"
+        ), {"status": account_status, "p": phone})
+    print(f"✅ 用户 {phone} 状态已设为 {account_status}" if r.rowcount else f"❌ 用户 {phone} 不存在")
 
 
 def cmd_clear_password(phone):
@@ -290,8 +291,8 @@ COMMANDS = {
     "uploads":        (cmd_uploads,        0),
     "stats":          (cmd_stats,          0),
     "set-admin":      (cmd_set_admin,      1),
-    "set-level":      (cmd_set_level,      2),
-    "set-active":     (cmd_set_active,     2),
+    "set-role":       (cmd_set_role,       2),
+    "set-status":     (cmd_set_status,     2),
     "clear-password": (cmd_clear_password, 1),
     "set-public":     (cmd_set_public,     2),
     "set-tags":       (cmd_set_tags,       2),

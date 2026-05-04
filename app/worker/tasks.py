@@ -47,7 +47,6 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
         DatasetVersion,
         Upload,
         UploadStatus,
-        UserLevel,
     )
 
     db = SessionLocal()
@@ -122,12 +121,6 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
                 status=UploadStatus.passed,
             )
             db.add(contribution)
-
-            # 更新用户等级
-            user = upload.user
-            if user and user.level == UserLevel.normal:
-                user.level = UserLevel.contributor
-                user.rank += 10
 
             db.commit()
             logger.info(f"Upload {upload_id} validated successfully, dataset {dataset.id}")

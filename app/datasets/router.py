@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user, get_optional_user
-from app.models import Contribution, Dataset, Upload, UploadStatus, User
+from app.models import Contribution, Dataset, PlatformRole, Upload, UploadStatus, User
 from app.schemas import (
     DatasetDetail,
     DatasetListItem,
@@ -216,7 +216,7 @@ def get_download_url(
         raise HTTPException(status_code=404, detail="数据集不存在")
 
     is_owner = str(d.owner_id) == str(current_user.id)
-    is_admin = current_user.level == "admin"
+    is_admin = current_user.platform_role == PlatformRole.system_admin
 
     if not is_owner and not is_admin:
         # 普通用户需要有贡献才能下载公开数据集
@@ -364,7 +364,7 @@ def update_dataset(
         raise HTTPException(status_code=404, detail="数据集不存在")
 
     is_owner = str(d.owner_id) == str(current_user.id)
-    is_admin = current_user.level == "admin"
+    is_admin = current_user.platform_role == PlatformRole.system_admin
     if not is_owner and not is_admin:
         raise HTTPException(status_code=403, detail="无权修改此数据集")
 
@@ -399,7 +399,7 @@ def admin_list_all_datasets(
     db: Session = Depends(get_db),
 ):
     """管理员接口：返回所有数据集（含私有），可搜索"""
-    if current_user.level != "admin":
+    if current_user.platform_role != PlatformRole.system_admin:
         raise HTTPException(status_code=403, detail="仅管理员可访问")
 
     q = db.query(Dataset)

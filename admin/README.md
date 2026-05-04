@@ -19,9 +19,9 @@ docker compose exec api python3 admin/db.py <命令> [参数]
 | `datasets`       | —                     | 列出所有数据集                           |
 | `dataset`        | `<id>`                | 查看单个数据集详情                       |
 | `uploads`        | —                     | 列出最近 30 条上传记录                   |
-| `set-admin`      | `<phone>`             | 将用户设为 admin                         |
-| `set-level`      | `<phone> <level>`     | 设置用户等级 (normal/contributor/admin)  |
-| `set-active`     | `<phone> <0\|1>`      | 启用/禁用用户                            |
+| `set-admin`      | `<phone>`             | 将用户设为 system_admin                  |
+| `set-role`       | `<phone> <role>`      | 设置平台角色 (user/system_admin)         |
+| `set-status`     | `<phone> <status>`    | 设置账号状态 (active/disabled)           |
 | `clear-password` | `<phone>`             | 清空密码（强制短信登录）                 |
 | `set-public`     | `<dataset_id> <0\|1>` | 设置数据集公开状态                       |
 | `set-tags`       | `<dataset_id> <tags>` | 设置数据集 tags（逗号分隔）              |
@@ -45,7 +45,7 @@ docker compose exec api python3 admin/db.py set-public <dataset_id> 1
 docker compose exec api python3 admin/db.py set-tags <dataset_id> "SO101,家居操作"
 
 # 禁用用户
-docker compose exec api python3 admin/db.py set-active 13800000000 0
+docker compose exec api python3 admin/db.py set-status 13800000000 disabled
 ```
 
 ---

@@ -16,10 +16,32 @@ def new_uuid() -> str:
     return str(uuid.uuid4())
 
 
-class UserLevel(str, enum.Enum):
-    normal = "normal"
-    contributor = "contributor"
+class UserStatus(str, enum.Enum):
+    active = "active"
+    disabled = "disabled"
+
+
+class PlatformRole(str, enum.Enum):
+    user = "user"
+    system_admin = "system_admin"
+
+
+class OrganizationStatus(str, enum.Enum):
+    active = "active"
+    disabled = "disabled"
+
+
+class MembershipRole(str, enum.Enum):
+    owner = "owner"
     admin = "admin"
+    member = "member"
+    viewer = "viewer"
+
+
+class MembershipStatus(str, enum.Enum):
+    active = "active"
+    invited = "invited"
+    disabled = "disabled"
 
 
 class UploadStatus(str, enum.Enum):
@@ -51,11 +73,10 @@ class User(Base):
     phone = Column(String(20), unique=True, nullable=False, index=True)
     hashed_password = Column(String(128), nullable=True)  # 预留密码字段
     nickname = Column(String(64), nullable=True)
-    level = Column(Enum(UserLevel, values_callable=lambda x: [e.value for e in x]), default=UserLevel.normal, nullable=False)
-    rank = Column(Integer, default=0)
+    status = Column(Enum(UserStatus, values_callable=lambda x: [e.value for e in x]), default=UserStatus.active, nullable=False)
+    platform_role = Column(Enum(PlatformRole, values_callable=lambda x: [e.value for e in x]), default=PlatformRole.user, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    is_active = Column(Boolean, default=True)
 
     datasets = relationship("Dataset", back_populates="owner")
     uploads = relationship("Upload", back_populates="user")
@@ -71,6 +92,68 @@ class User(Base):
         foreign_keys="CollectionAssignment.user_id",
     )
     collection_runs = relationship("CollectionRun", back_populates="user")
+    memberships = relationship(
+        "Membership",
+        back_populates="user",
+        foreign_keys="Membership.user_id",
+    )
+    created_organizations = relationship(
+        "Organization",
+        back_populates="creator",
+        foreign_keys="Organization.created_by_user_id",
+    )
+
+    @property
+    def has_password(self) -> bool:
+        return bool(self.hashed_password)
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    name = Column(String(128), nullable=False)
+    status = Column(
+        Enum(OrganizationStatus, values_callable=lambda x: [e.value for e in x]),
+        default=OrganizationStatus.active,
+        nullable=False,
+    )
+    created_by_user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    creator = relationship("User", back_populates="created_organizations", foreign_keys=[created_by_user_id])
+    memberships = relationship("Membership", back_populates="organization")
+
+
+class Membership(Base):
+    __tablename__ = "memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "org_id", name="uq_membership_user_org"),
+        Index("ix_memberships_user_status", "user_id", "status"),
+        Index("ix_memberships_org_status_role", "org_id", "status", "role_code"),
+    )
+
+    id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    org_id = Column(CHAR(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    role_code = Column(
+        Enum(MembershipRole, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+    )
+    status = Column(
+        Enum(MembershipStatus, values_callable=lambda x: [e.value for e in x]),
+        default=MembershipStatus.active,
+        nullable=False,
+    )
+    invited_by_user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    joined_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", back_populates="memberships", foreign_keys=[user_id])
+    organization = relationship("Organization", back_populates="memberships")
+    inviter = relationship("User", foreign_keys=[invited_by_user_id])
 
 
 # ─── Datasets ─────────────────────────────────────────────────────────────────

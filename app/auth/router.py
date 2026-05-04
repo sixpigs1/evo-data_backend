@@ -21,7 +21,7 @@ from app.auth.utils import (
 from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user
-from app.models import User
+from app.models import User, UserStatus
 from app.schemas import (
     CaptchaResponse,
     ChangePhoneRequest,
@@ -126,7 +126,7 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
 
-    if not user.is_active:
+    if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="账号已被禁用")
 
     access_token = create_access_token(str(user.id))
@@ -145,7 +145,7 @@ def refresh_token(body: RefreshRequest, db: Session = Depends(get_db)):
 
     user_id = payload.get("sub")
     user = db.query(User).filter(User.id == user_id).first()
-    if not user or not user.is_active:
+    if not user or user.status == UserStatus.disabled:
         raise HTTPException(status_code=401, detail="用户不存在")
 
     new_access = create_access_token(str(user.id))
@@ -178,7 +178,7 @@ def login_with_password(body: PasswordLoginRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="账号不存在或未设置密码")
     if not verify_password(body.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="密码错误")
-    if not user.is_active:
+    if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="账号已被禁用")
 
     access_token = create_access_token(str(user.id))
