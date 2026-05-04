@@ -9,11 +9,12 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import Membership, MembershipRole, MembershipStatus, User
-from app.organization_access import require_active_membership, require_owner
+from app.organization_access import require_active_membership, require_owner, require_task_admin
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 RoleCode = Literal["owner", "admin", "member"]
+InviteRoleCode = Literal["admin", "member"]
 MemberStatus = Literal["active", "disabled"]
 
 
@@ -36,7 +37,7 @@ class CurrentOrganizationResponse(BaseModel):
 
 class MemberUpsertRequest(BaseModel):
     phone: str
-    role_code: RoleCode = "member"
+    role_code: InviteRoleCode = "member"
 
     @field_validator("phone")
     @classmethod
@@ -48,7 +49,7 @@ class MemberUpsertRequest(BaseModel):
 
 
 class MemberUpdateRequest(BaseModel):
-    role_code: Optional[RoleCode] = None
+    role_code: Optional[InviteRoleCode] = None
     status: Optional[MemberStatus] = None
 
 
@@ -99,6 +100,15 @@ def _organization_members(db: Session, org_id: str) -> list[Membership]:
     )
 
 
+def _ensure_invite_role(actor_membership: Membership, role_code: InviteRoleCode, existing: Membership | None) -> None:
+    if actor_membership.role_code == MembershipRole.owner:
+        return
+    if role_code != "member":
+        raise HTTPException(status_code=403, detail="admin 只能邀请 member")
+    if existing is not None and existing.role_code != MembershipRole.member:
+        raise HTTPException(status_code=403, detail="admin 只能管理 member 邀请")
+
+
 @router.get("/current", response_model=CurrentOrganizationResponse)
 def current_organization(
     current_user: User = Depends(get_current_user),
@@ -119,7 +129,7 @@ def upsert_member(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    owner_membership = require_owner(db, current_user)
+    actor_membership = require_task_admin(db, current_user)
     user = db.query(User).filter(User.phone == body.phone).first()
     if user is None:
         user = User(phone=body.phone)
@@ -130,15 +140,16 @@ def upsert_member(
         db.query(Membership)
         .filter(
             Membership.user_id == user.id,
-            Membership.org_id == owner_membership.org_id,
+            Membership.org_id == actor_membership.org_id,
         )
         .first()
     )
+    _ensure_invite_role(actor_membership, body.role_code, membership)
     if membership is None:
         membership = Membership(
             id=str(uuid4()),
             user_id=user.id,
-            org_id=owner_membership.org_id,
+            org_id=actor_membership.org_id,
             role_code=MembershipRole(body.role_code),
             status=MembershipStatus.active,
             invited_by_user_id=current_user.id,
