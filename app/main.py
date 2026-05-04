@@ -9,6 +9,7 @@ from app.collection.router import router as collection_router
 from app.config import settings
 from app.database import Base, engine
 from app.datasets.router import router as datasets_router
+from app.organizations.router import router as organizations_router
 from app.sts.router import router as sts_router
 
 # 创建所有数据库表（生产环境建议使用 alembic migrate）
@@ -33,6 +34,7 @@ app.add_middleware(
 
 # 路由注册
 app.include_router(auth_router)
+app.include_router(organizations_router)
 app.include_router(collection_router)
 app.include_router(datasets_router)
 app.include_router(sts_router)

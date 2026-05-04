@@ -218,6 +218,20 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class OrganizationInfo(BaseModel):
+    id: str
+    name: str
+    status: str
+
+
+class MembershipInfo(BaseModel):
+    id: str
+    org_id: str
+    role_code: Literal["owner", "admin", "member"]
+    status: str
+    organization: OrganizationInfo
+
+
 class NicknameUpdateRequest(BaseModel):
     nickname: Optional[str] = None
 
@@ -237,7 +251,8 @@ class UserInfo(BaseModel):
     phone: str
     nickname: Optional[str]
     status: str
-    platform_role: str
+    memberships: list[MembershipInfo] = []
+    current_membership: Optional[MembershipInfo] = None
     has_password: bool = False   # 是否已设置密码（前端判断是否显示"设置密码"入口）
     created_at: datetime
 

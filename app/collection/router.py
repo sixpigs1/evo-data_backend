@@ -19,9 +19,11 @@ from app.models import (
     CollectionRun,
     CollectionRunStatus,
     CollectionTask,
-    PlatformRole,
+    Membership,
+    MembershipStatus,
     User,
 )
+from app.organization_access import require_active_membership, require_task_admin
 
 router = APIRouter(prefix="/collection", tags=["collection"])
 
@@ -60,11 +62,6 @@ def _validate_phone(value: str) -> str:
 
 def _run_status(run: CollectionRun) -> str:
     return run.status.value if hasattr(run.status, "value") else str(run.status)
-
-
-def _require_admin(user: User) -> None:
-    if user.platform_role != PlatformRole.system_admin:
-        raise HTTPException(status_code=403, detail="仅管理员可访问")
 
 
 def _task_payload(task: CollectionTask) -> dict[str, Any]:
@@ -193,6 +190,7 @@ class CollectionTaskUpdate(BaseModel):
 
 class CollectionTaskResponse(CollectionTaskBase):
     id: str
+    org_id: str
     name: str
     created_by_id: Optional[str] = None
     created_at: datetime
@@ -223,6 +221,7 @@ class AssignmentCreate(BaseModel):
 
 class AssignmentResponse(BaseModel):
     id: str
+    org_id: str
     user_id: Optional[str] = None
     phone: str
     task_id: str
@@ -258,6 +257,7 @@ class RunFinishRequest(RunHeartbeatRequest):
 
 class RunResponse(BaseModel):
     id: str
+    org_id: str
     assignment_id: Optional[str]
     task_id: Optional[str]
     dataset_name: str
@@ -291,6 +291,7 @@ def _assignment_response(assignment: CollectionAssignment, db: Session) -> Assig
     active_run = next((run for run in runs if _run_status(run) == "active"), None)
     return AssignmentResponse(
         id=str(assignment.id),
+        org_id=str(assignment.org_id),
         user_id=str(assignment.user_id) if assignment.user_id else None,
         phone=assignment.phone,
         task_id=str(assignment.task_id),
@@ -307,6 +308,7 @@ def _assignment_response(assignment: CollectionAssignment, db: Session) -> Assig
 def _run_response(run: CollectionRun) -> RunResponse:
     return RunResponse(
         id=str(run.id),
+        org_id=str(run.org_id),
         assignment_id=str(run.assignment_id) if run.assignment_id else None,
         task_id=str(run.task_id) if run.task_id else None,
         dataset_name=run.dataset_name,
@@ -365,11 +367,13 @@ def my_assignments(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    membership = require_active_membership(db, current_user)
     target_date = target_date or _today()
     assignments = (
         db.query(CollectionAssignment)
         .join(CollectionTask)
         .filter(
+            CollectionAssignment.org_id == membership.org_id,
             CollectionAssignment.phone == current_user.phone,
             CollectionAssignment.target_date == target_date,
             CollectionAssignment.is_active == True,
@@ -392,10 +396,13 @@ def start_run(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    membership = require_active_membership(db, current_user)
     today = _today()
     db.query(User.id).filter(User.id == current_user.id).with_for_update().one()
     assignment = db.query(CollectionAssignment).filter(CollectionAssignment.id == body.assignment_id).first()
     assignment = _require_startable_assignment(assignment, current_user, today)
+    if assignment.org_id != membership.org_id:
+        raise HTTPException(status_code=403, detail="该任务不属于当前组织")
 
     active = (
         db.query(CollectionRun)
@@ -413,6 +420,7 @@ def start_run(
     dataset_name = body.dataset_name or f"{assignment.task.dataset_prefix}_{today:%Y%m%d}_{run_id[:8]}"
     run = CollectionRun(
         id=run_id,
+        org_id=assignment.org_id,
         user_id=current_user.id,
         assignment_id=assignment.id,
         task_id=assignment.task_id,
@@ -510,8 +518,9 @@ def admin_list_tasks(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
+    membership = require_task_admin(db, current_user)
     query = db.query(CollectionTask)
+    query = query.filter(CollectionTask.org_id == membership.org_id)
     if not include_inactive:
         query = query.filter(CollectionTask.is_active == True)
     return query.order_by(CollectionTask.created_at.desc()).all()
@@ -523,10 +532,10 @@ def admin_create_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
+    membership = require_task_admin(db, current_user)
     payload = body.model_dump()
     payload["name"] = payload["name"] or _task_name_from_prompt(body.task_prompt)
-    task = CollectionTask(**payload, created_by_id=current_user.id)
+    task = CollectionTask(**payload, org_id=membership.org_id, created_by_id=current_user.id)
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -540,8 +549,11 @@ def admin_update_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
-    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    membership = require_task_admin(db, current_user)
+    task = db.query(CollectionTask).filter(
+        CollectionTask.id == task_id,
+        CollectionTask.org_id == membership.org_id,
+    ).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     for key, value in body.model_dump(exclude_unset=True).items():
@@ -561,8 +573,11 @@ def admin_delete_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
-    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    membership = require_task_admin(db, current_user)
+    task = db.query(CollectionTask).filter(
+        CollectionTask.id == task_id,
+        CollectionTask.org_id == membership.org_id,
+    ).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -570,6 +585,7 @@ def admin_delete_task(
         db.query(CollectionRun)
         .filter(
             CollectionRun.task_id == task_id,
+            CollectionRun.org_id == membership.org_id,
             CollectionRun.status == CollectionRunStatus.active,
         )
         .first()
@@ -606,15 +622,31 @@ def admin_upsert_assignment(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
-    task = db.query(CollectionTask).filter(CollectionTask.id == body.task_id).first()
+    membership = require_task_admin(db, current_user)
+    task = db.query(CollectionTask).filter(
+        CollectionTask.id == body.task_id,
+        CollectionTask.org_id == membership.org_id,
+    ).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    user = db.query(User).filter(User.phone == body.phone).first()
+    target_membership = (
+        db.query(Membership)
+        .join(User, User.id == Membership.user_id)
+        .filter(
+            Membership.org_id == membership.org_id,
+            Membership.status == MembershipStatus.active,
+            User.phone == body.phone,
+        )
+        .first()
+    )
+    if target_membership is None:
+        raise HTTPException(status_code=403, detail="该手机号不是当前组织 active 成员")
+    user = target_membership.user
     assignment = (
         db.query(CollectionAssignment)
         .filter(
+            CollectionAssignment.org_id == membership.org_id,
             CollectionAssignment.phone == body.phone,
             CollectionAssignment.task_id == task.id,
             CollectionAssignment.target_date == body.target_date,
@@ -627,6 +659,7 @@ def admin_upsert_assignment(
         assignment.is_active = body.is_active
     else:
         assignment = CollectionAssignment(
+            org_id=membership.org_id,
             phone=body.phone,
             user_id=user.id if user else None,
             task_id=task.id,
@@ -647,8 +680,8 @@ def admin_progress(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _require_admin(current_user)
-    query = db.query(CollectionAssignment)
+    membership = require_task_admin(db, current_user)
+    query = db.query(CollectionAssignment).filter(CollectionAssignment.org_id == membership.org_id)
     if target_date is not None:
         query = query.filter(CollectionAssignment.target_date == target_date)
     assignments = query.order_by(CollectionAssignment.target_date.desc(), CollectionAssignment.created_at.desc()).all()

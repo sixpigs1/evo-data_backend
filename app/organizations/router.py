@@ -1,0 +1,186 @@
+from typing import Literal, Optional
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, field_validator
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.deps import get_current_user
+from app.models import Membership, MembershipRole, MembershipStatus, User
+from app.organization_access import require_active_membership, require_owner
+
+router = APIRouter(prefix="/organizations", tags=["organizations"])
+
+RoleCode = Literal["owner", "admin", "member"]
+MemberStatus = Literal["active", "disabled"]
+
+
+class OrganizationMemberResponse(BaseModel):
+    id: str
+    user_id: str
+    phone: str
+    nickname: Optional[str]
+    role_code: RoleCode
+    status: str
+    joined_at: Optional[str] = None
+
+
+class CurrentOrganizationResponse(BaseModel):
+    id: str
+    name: str
+    role_code: RoleCode
+    members: list[OrganizationMemberResponse]
+
+
+class MemberUpsertRequest(BaseModel):
+    phone: str
+    role_code: RoleCode = "member"
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        value = value.strip()
+        if not value.isdigit() or len(value) != 11 or not value.startswith("1"):
+            raise ValueError("手机号格式不正确")
+        return value
+
+
+class MemberUpdateRequest(BaseModel):
+    role_code: Optional[RoleCode] = None
+    status: Optional[MemberStatus] = None
+
+
+def _enum_value(value):
+    return value.value if hasattr(value, "value") else value
+
+
+def _member_response(membership: Membership) -> OrganizationMemberResponse:
+    return OrganizationMemberResponse(
+        id=str(membership.id),
+        user_id=str(membership.user_id),
+        phone=membership.user.phone,
+        nickname=membership.user.nickname,
+        role_code=_enum_value(membership.role_code),
+        status=_enum_value(membership.status),
+        joined_at=membership.joined_at.isoformat() if membership.joined_at else None,
+    )
+
+
+def _active_owner_count(db: Session, org_id: str) -> int:
+    return (
+        db.query(Membership)
+        .filter(
+            Membership.org_id == org_id,
+            Membership.role_code == MembershipRole.owner,
+            Membership.status == MembershipStatus.active,
+        )
+        .count()
+    )
+
+
+def _ensure_owner_remains(db: Session, membership: Membership, next_role: MembershipRole, next_status: MembershipStatus) -> None:
+    if membership.role_code != MembershipRole.owner or membership.status != MembershipStatus.active:
+        return
+    if next_role == MembershipRole.owner and next_status == MembershipStatus.active:
+        return
+    if _active_owner_count(db, str(membership.org_id)) <= 1:
+        raise HTTPException(status_code=409, detail="组织至少需要保留一个 active owner")
+
+
+def _organization_members(db: Session, org_id: str) -> list[Membership]:
+    return (
+        db.query(Membership)
+        .join(User, User.id == Membership.user_id)
+        .filter(Membership.org_id == org_id)
+        .order_by(Membership.created_at.asc())
+        .all()
+    )
+
+
+@router.get("/current", response_model=CurrentOrganizationResponse)
+def current_organization(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    membership = require_active_membership(db, current_user)
+    return CurrentOrganizationResponse(
+        id=str(membership.organization.id),
+        name=membership.organization.name,
+        role_code=_enum_value(membership.role_code),
+        members=[_member_response(item) for item in _organization_members(db, str(membership.org_id))],
+    )
+
+
+@router.post("/current/members", response_model=OrganizationMemberResponse, status_code=status.HTTP_201_CREATED)
+def upsert_member(
+    body: MemberUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    owner_membership = require_owner(db, current_user)
+    user = db.query(User).filter(User.phone == body.phone).first()
+    if user is None:
+        user = User(phone=body.phone)
+        db.add(user)
+        db.flush()
+
+    membership = (
+        db.query(Membership)
+        .filter(
+            Membership.user_id == user.id,
+            Membership.org_id == owner_membership.org_id,
+        )
+        .first()
+    )
+    if membership is None:
+        membership = Membership(
+            id=str(uuid4()),
+            user_id=user.id,
+            org_id=owner_membership.org_id,
+            role_code=MembershipRole(body.role_code),
+            status=MembershipStatus.active,
+            invited_by_user_id=current_user.id,
+            joined_at=func.now(),
+        )
+        db.add(membership)
+    else:
+        membership.role_code = MembershipRole(body.role_code)
+        membership.status = MembershipStatus.active
+        membership.invited_by_user_id = current_user.id
+        membership.joined_at = membership.joined_at or func.now()
+    db.commit()
+    db.refresh(membership)
+    return _member_response(membership)
+
+
+@router.patch("/current/members/{membership_id}", response_model=OrganizationMemberResponse)
+def update_member(
+    membership_id: str,
+    body: MemberUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    owner_membership = require_owner(db, current_user)
+    membership = (
+        db.query(Membership)
+        .filter(
+            Membership.id == membership_id,
+            Membership.org_id == owner_membership.org_id,
+        )
+        .first()
+    )
+    if membership is None:
+        raise HTTPException(status_code=404, detail="成员不存在")
+
+    next_role = MembershipRole(body.role_code) if body.role_code is not None else membership.role_code
+    next_status = MembershipStatus(body.status) if body.status is not None else membership.status
+    _ensure_owner_remains(db, membership, next_role, next_status)
+    membership.role_code = next_role
+    membership.status = next_status
+    if next_status == MembershipStatus.active and membership.joined_at is None:
+        membership.joined_at = func.now()
+    db.commit()
+    db.refresh(membership)
+    return _member_response(membership)

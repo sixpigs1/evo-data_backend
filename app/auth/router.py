@@ -22,6 +22,7 @@ from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import User, UserStatus
+from app.organization_access import active_memberships
 from app.schemas import (
     CaptchaResponse,
     ChangePhoneRequest,
@@ -46,6 +47,38 @@ def get_redis() -> redis_lib.Redis:
     if _redis is None:
         _redis = redis_lib.from_url(settings.REDIS_URL, decode_responses=True)
     return _redis
+
+
+def _enum_value(value):
+    return value.value if hasattr(value, "value") else value
+
+
+def _membership_payload(membership):
+    return {
+        "id": str(membership.id),
+        "org_id": str(membership.org_id),
+        "role_code": _enum_value(membership.role_code),
+        "status": _enum_value(membership.status),
+        "organization": {
+            "id": str(membership.organization.id),
+            "name": membership.organization.name,
+            "status": _enum_value(membership.organization.status),
+        },
+    }
+
+
+def _user_info(user: User, db: Session) -> UserInfo:
+    memberships = [_membership_payload(item) for item in active_memberships(db, user)]
+    return UserInfo(
+        id=str(user.id),
+        phone=user.phone,
+        nickname=user.nickname,
+        status=_enum_value(user.status),
+        memberships=memberships,
+        current_membership=memberships[0] if memberships else None,
+        has_password=user.has_password,
+        created_at=user.created_at,
+    )
 
 
 # ─── 图形验证码 ────────────────────────────────────────────────────────────────
@@ -156,8 +189,11 @@ def refresh_token(body: RefreshRequest, db: Session = Depends(get_db)):
 # ─── 当前用户信息 ──────────────────────────────────────────────────────────────
 
 @router.get("/me", response_model=UserInfo)
-def get_me(current_user: User = Depends(get_current_user)):
-    return current_user
+def get_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return _user_info(current_user, db)
 
 
 # ─── 密码登录 ──────────────────────────────────────────────────────────────────
@@ -257,4 +293,4 @@ def update_nickname(
     current_user.nickname = body.nickname or None
     db.commit()
     db.refresh(current_user)
-    return current_user
+    return _user_info(current_user, db)

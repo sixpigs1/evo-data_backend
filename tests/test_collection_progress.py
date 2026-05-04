@@ -41,6 +41,7 @@ def make_task():
 def make_assignment():
     return SimpleNamespace(
         id="assignment-1",
+        org_id="org-1",
         user_id="user-1",
         phone="13800138000",
         task_id="task-1",
@@ -55,6 +56,7 @@ def make_run(status, duration_seconds, *, saved_episodes=0, metadata=None):
     metadata_json = json.dumps(metadata, separators=(",", ":")) if metadata is not None else None
     return SimpleNamespace(
         id=f"run-{status}-{duration_seconds}-{saved_episodes}",
+        org_id="org-1",
         status=status,
         duration_seconds=duration_seconds,
         saved_episodes=saved_episodes,

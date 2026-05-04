@@ -35,7 +35,6 @@ class MembershipRole(str, enum.Enum):
     owner = "owner"
     admin = "admin"
     member = "member"
-    viewer = "viewer"
 
 
 class MembershipStatus(str, enum.Enum):
@@ -124,6 +123,7 @@ class Organization(Base):
 
     creator = relationship("User", back_populates="created_organizations", foreign_keys=[created_by_user_id])
     memberships = relationship("Membership", back_populates="organization")
+    collection_tasks = relationship("CollectionTask", back_populates="organization")
 
 
 class Membership(Base):
@@ -227,6 +227,7 @@ class CollectionTask(Base):
     __tablename__ = "collection_tasks"
 
     id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    org_id = Column(CHAR(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(128), nullable=False, unique=True, index=True)
     description = Column(Text, nullable=True)
     task_prompt = Column(Text, nullable=False)
@@ -241,6 +242,7 @@ class CollectionTask(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    organization = relationship("Organization", back_populates="collection_tasks")
     creator = relationship("User", back_populates="collection_tasks", foreign_keys=[created_by_id])
     assignments = relationship("CollectionAssignment", back_populates="task")
     runs = relationship("CollectionRun", back_populates="task")
@@ -254,6 +256,7 @@ class CollectionAssignment(Base):
     )
 
     id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    org_id = Column(CHAR(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     phone = Column(String(20), nullable=False, index=True)
     user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     task_id = Column(CHAR(36), ForeignKey("collection_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -278,6 +281,7 @@ class CollectionRun(Base):
     )
 
     id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    org_id = Column(CHAR(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(CHAR(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     assignment_id = Column(CHAR(36), ForeignKey("collection_assignments.id", ondelete="SET NULL"), nullable=True, index=True)
     task_id = Column(CHAR(36), ForeignKey("collection_tasks.id", ondelete="SET NULL"), nullable=True, index=True)
