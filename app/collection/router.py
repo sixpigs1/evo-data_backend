@@ -8,7 +8,7 @@ from datetime import date, datetime
 from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
@@ -93,6 +93,16 @@ def _run_duration(
     if saved_episodes is not None and episode_time_s is not None:
         return max(saved_episodes, 0) * max(episode_time_s, 0)
     return 0
+
+
+def _run_counts_toward_progress(run: CollectionRun) -> bool:
+    status = _run_status(run)
+    if status != "failed":
+        return True
+    metadata = _json_loads(run.metadata_json) or {}
+    if metadata.get("local_start_failed") is True:
+        return False
+    return (run.saved_episodes or 0) > 0 and (run.duration_seconds or 0) > 0
 
 
 class CollectionTaskBase(BaseModel):
@@ -277,7 +287,7 @@ class CollectionTodayResponse(BaseModel):
 
 def _assignment_response(assignment: CollectionAssignment, db: Session) -> AssignmentResponse:
     runs = db.query(CollectionRun).filter(CollectionRun.assignment_id == assignment.id).all()
-    completed = sum(run.duration_seconds or 0 for run in runs if _run_status(run) != "failed")
+    completed = sum(run.duration_seconds or 0 for run in runs if _run_counts_toward_progress(run))
     active_run = next((run for run in runs if _run_status(run) == "active"), None)
     return AssignmentResponse(
         id=str(assignment.id),
@@ -543,6 +553,51 @@ def admin_update_task(
     db.commit()
     db.refresh(task)
     return task
+
+
+@router.delete("/admin/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def admin_delete_task(
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _require_admin(current_user)
+    task = db.query(CollectionTask).filter(CollectionTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    active_run = (
+        db.query(CollectionRun)
+        .filter(
+            CollectionRun.task_id == task_id,
+            CollectionRun.status == CollectionRunStatus.active,
+        )
+        .first()
+    )
+    if active_run:
+        raise HTTPException(status_code=409, detail="任务有正在进行的采集，不能删除")
+
+    assignment_ids = [
+        row[0]
+        for row in db.query(CollectionAssignment.id)
+        .filter(CollectionAssignment.task_id == task_id)
+        .all()
+    ]
+    if assignment_ids:
+        db.query(CollectionRun).filter(CollectionRun.assignment_id.in_(assignment_ids)).update(
+            {CollectionRun.assignment_id: None},
+            synchronize_session=False,
+        )
+        db.query(CollectionAssignment).filter(CollectionAssignment.id.in_(assignment_ids)).delete(
+            synchronize_session=False,
+        )
+    db.query(CollectionRun).filter(CollectionRun.task_id == task_id).update(
+        {CollectionRun.task_id: None},
+        synchronize_session=False,
+    )
+    db.delete(task)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/admin/assignments", response_model=AssignmentResponse)
