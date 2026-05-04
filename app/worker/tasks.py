@@ -182,7 +182,8 @@ def generate_preview_task(self, dataset_id: str):
         upload_prefix = dataset.oss_path.rstrip("/") + "/"
 
         # ── 自动探测数据集根目录 ────────────────────────────────────────────────
-        all_keys = [obj.key for obj in oss2.ObjectIterator(bucket, prefix=upload_prefix)]
+        all_objs = list(oss2.ObjectIterator(bucket, prefix=upload_prefix))
+        all_keys = [obj.key for obj in all_objs]
         info_candidates = [k for k in all_keys if k.endswith("meta/info.json")]
         if not info_candidates:
             logger.warning(f"No meta/info.json under {upload_prefix}, skipping preview")
@@ -190,6 +191,16 @@ def generate_preview_task(self, dataset_id: str):
         info_key = min(info_candidates, key=lambda k: k.count("/"))
         prefix = info_key[: -len("meta/info.json")]
         logger.info(f"Preview root: {prefix}")
+
+        # 计算数据集原始文件总大小（仅统计 prefix 下的文件，排除 previews/ 目录）
+        dataset_size_bytes = sum(
+            obj.size for obj in all_objs
+            if obj.key.startswith(prefix) and not obj.key.startswith(f"previews/{dataset_id}/")
+        )
+        if dataset_size_bytes > 0 and not dataset.size_bytes:
+            dataset.size_bytes = dataset_size_bytes
+            db.commit()
+            logger.info(f"Preview: 数据集体积已更新 {dataset_size_bytes} bytes")
 
         info = json_lib.loads(bucket.get_object(info_key).read())
         fps = float(info.get("fps", 30))
@@ -295,6 +306,7 @@ def generate_preview_task(self, dataset_id: str):
 
         # ── 2. 下载视频、裁剪 episode_0、生成缩略图 ─────────────────────────────
         with tempfile.TemporaryDirectory() as tmpdir:
+            cam_thumb_paths: list = []   # 每个摄像头的首帧图像路径，用于横向拼接
             for cam_feature in camera_keys:
                 cam_name = cam_feature.replace("observation.images.", "")
                 oss_video_key = None
@@ -369,23 +381,47 @@ def generate_preview_task(self, dataset_id: str):
                 generated_videos[cam_name] = oss_out_key
                 logger.info(f"Preview: 视频已上传 {oss_out_key}")
 
-                # 用第一个摄像头生成缩略图
-                if not generated_thumbnail:
-                    thumb_path = os.path.join(tmpdir, "thumbnail.jpg")
-                    r2 = subprocess.run(
-                        ["ffmpeg", "-y", "-i", out_path,
-                         "-vframes", "1", "-q:v", "3", "-vf", "scale=640:-1",
-                         thumb_path],
-                        capture_output=True, timeout=60,
-                    )
-                    if r2.returncode == 0 and os.path.exists(thumb_path):
-                        with open(thumb_path, "rb") as f:
-                            thumb_data = f.read()
-                        bucket.put_object(preview_prefix + "thumbnail.jpg", thumb_data,
-                                          headers={"Content-Type": "image/jpeg"})
-                        dataset.thumbnail_path = preview_prefix + "thumbnail.jpg"
-                        generated_thumbnail = True
-                        logger.info(f"Preview: 缩略图生成成功 ({len(thumb_data)} bytes)")
+                # 用每个摄像头第一帧提取单帧图像，后续统一拼接
+                cam_thumb_path = os.path.join(tmpdir, f"thumb_{cam_name}.jpg")
+                r2 = subprocess.run(
+                    ["ffmpeg", "-y", "-i", out_path,
+                     "-vframes", "1", "-q:v", "3", "-vf", "scale=640:-1",
+                     cam_thumb_path],
+                    capture_output=True, timeout=60,
+                )
+                if r2.returncode == 0 and os.path.exists(cam_thumb_path):
+                    cam_thumb_paths.append(cam_thumb_path)
+
+            # ── 横向拼接所有摄像头首帧 → 生成缩略图 ──────────────────────────
+            if cam_thumb_paths:
+                thumb_path = os.path.join(tmpdir, "thumbnail.jpg")
+                try:
+                    from PIL import Image as PILImage
+                    frames = [PILImage.open(p) for p in cam_thumb_paths]
+                    # 统一高度为最小高度
+                    min_h = min(f.height for f in frames)
+                    resized = [f.resize((int(f.width * min_h / f.height), min_h), PILImage.LANCZOS)
+                               for f in frames]
+                    total_w = sum(f.width for f in resized)
+                    combined = PILImage.new("RGB", (total_w, min_h))
+                    x = 0
+                    for f in resized:
+                        combined.paste(f, (x, 0))
+                        x += f.width
+                    combined.save(thumb_path, "JPEG", quality=85)
+                except Exception as pil_err:
+                    logger.warning(f"PIL 拼接失败，使用单帧: {pil_err}")
+                    import shutil
+                    shutil.copy(cam_thumb_paths[0], thumb_path)
+
+                if os.path.exists(thumb_path):
+                    with open(thumb_path, "rb") as f:
+                        thumb_data = f.read()
+                    bucket.put_object(preview_prefix + "thumbnail.jpg", thumb_data,
+                                      headers={"Content-Type": "image/jpeg"})
+                    dataset.thumbnail_path = preview_prefix + "thumbnail.jpg"
+                    generated_thumbnail = True
+                    logger.info(f"Preview: 缩略图生成成功 ({len(thumb_data)} bytes, {len(cam_thumb_paths)} 摄像头)")
 
         # ── 3. 提取轨迹数据 ────────────────────────────────────────────────────
         ep0_parquet_key = None

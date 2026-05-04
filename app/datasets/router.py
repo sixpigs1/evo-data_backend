@@ -237,7 +237,7 @@ def get_download_url(
     try:
         import oss2
         auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
-        bucket = oss2.Bucket(auth, settings.OSS_ENDPOINT, settings.OSS_BUCKET_NAME)
+        bucket = oss2.Bucket(auth, settings.OSS_PUBLIC_ENDPOINT, settings.OSS_BUCKET_NAME)
 
         expires = 3600  # 1小时有效
         url = bucket.sign_url("GET", full_key, expires)
@@ -270,7 +270,7 @@ def get_preview_info(
 
     import oss2
     auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
-    bucket = oss2.Bucket(auth, settings.OSS_ENDPOINT, settings.OSS_BUCKET_NAME)
+    bucket = oss2.Bucket(auth, settings.OSS_PUBLIC_ENDPOINT, settings.OSS_BUCKET_NAME)
 
     preview_prefix = d.preview_path.rstrip("/") + "/"
     meta_key = preview_prefix + "meta_preview.json"
@@ -327,7 +327,7 @@ def get_thumbnail(
     try:
         import oss2
         auth = oss2.Auth(settings.OSS_ACCESS_KEY_ID, settings.OSS_ACCESS_KEY_SECRET)
-        bucket = oss2.Bucket(auth, settings.OSS_ENDPOINT, settings.OSS_BUCKET_NAME)
+        bucket = oss2.Bucket(auth, settings.OSS_PUBLIC_ENDPOINT, settings.OSS_BUCKET_NAME)
         url = bucket.sign_url("GET", d.thumbnail_path, 3600)
         return RedirectResponse(url=url, status_code=302)
     except Exception as e:
