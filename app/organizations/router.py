@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.deps import get_current_user
-from app.models import Membership, MembershipRole, MembershipStatus, User
-from app.organization_access import require_active_membership, require_owner, require_task_admin
+from app.models import Membership, MembershipRole, MembershipStatus, OrganizationStatus, User
+from app.organization_access import require_active_membership, require_task_admin
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
@@ -51,10 +51,6 @@ class MemberUpsertRequest(BaseModel):
 class MemberUpdateRequest(BaseModel):
     role_code: Optional[InviteRoleCode] = None
     status: Optional[MemberStatus] = None
-
-
-class MembershipInvitationResponseRequest(BaseModel):
-    status: Literal["active", "disabled"]
 
 
 def _enum_value(value):
@@ -113,6 +109,32 @@ def _ensure_invite_role(actor_membership: Membership, role_code: InviteRoleCode,
         raise HTTPException(status_code=403, detail="admin 只能管理 member 邀请")
 
 
+def _ensure_member_management(
+    actor_membership: Membership,
+    membership: Membership,
+    next_role: MembershipRole,
+    next_status: MembershipStatus,
+) -> None:
+    if actor_membership.role_code == MembershipRole.owner:
+        return
+    if membership.role_code != MembershipRole.member or next_role != MembershipRole.member:
+        raise HTTPException(status_code=403, detail="admin 只能管理 member")
+    if next_status not in (MembershipStatus.invited, MembershipStatus.disabled):
+        raise HTTPException(status_code=403, detail="admin 只能取消 member 邀请或移除 member")
+
+
+def _active_membership_in_other_org(db: Session, user_id: str, org_id: str) -> Membership | None:
+    return (
+        db.query(Membership)
+        .filter(
+            Membership.user_id == user_id,
+            Membership.org_id != org_id,
+            Membership.status == MembershipStatus.active,
+        )
+        .first()
+    )
+
+
 @router.get("/current", response_model=CurrentOrganizationResponse)
 def current_organization(
     current_user: User = Depends(get_current_user),
@@ -144,30 +166,29 @@ def upsert_member(
         db.query(Membership)
         .filter(
             Membership.user_id == user.id,
+            Membership.org_id == actor_membership.org_id,
         )
         .first()
     )
-    if membership is not None and membership.org_id != actor_membership.org_id:
-        raise HTTPException(status_code=409, detail="该用户已属于其他组织")
-
-    _ensure_invite_role(actor_membership, body.role_code, membership)
+    invite_role = body.role_code
+    _ensure_invite_role(actor_membership, invite_role, membership)
     if membership is None:
         membership = Membership(
             id=str(uuid4()),
             user_id=user.id,
             org_id=actor_membership.org_id,
-            role_code=MembershipRole(body.role_code),
+            role_code=MembershipRole(invite_role),
             status=MembershipStatus.invited,
             invited_by_user_id=current_user.id,
             joined_at=None,
         )
         db.add(membership)
     else:
-        membership.role_code = MembershipRole(body.role_code)
+        if membership.status == MembershipStatus.active:
+            raise HTTPException(status_code=409, detail="该用户已经在当前组织中")
+        membership.role_code = MembershipRole(invite_role)
+        membership.status = MembershipStatus.invited
         membership.invited_by_user_id = current_user.id
-        if membership.status != MembershipStatus.active:
-            membership.status = MembershipStatus.invited
-            membership.joined_at = None
     db.commit()
     db.refresh(membership)
     return _member_response(membership)
@@ -180,12 +201,12 @@ def update_member(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    owner_membership = require_owner(db, current_user)
+    actor_membership = require_task_admin(db, current_user)
     membership = (
         db.query(Membership)
         .filter(
             Membership.id == membership_id,
-            Membership.org_id == owner_membership.org_id,
+            Membership.org_id == actor_membership.org_id,
         )
         .first()
     )
@@ -194,6 +215,9 @@ def update_member(
 
     next_role = MembershipRole(body.role_code) if body.role_code is not None else membership.role_code
     next_status = MembershipStatus(body.status) if body.status is not None else membership.status
+    if membership.status == MembershipStatus.invited and next_status == MembershipStatus.active:
+        raise HTTPException(status_code=409, detail="邀请需要用户本人接受")
+    _ensure_member_management(actor_membership, membership, next_role, next_status)
     _ensure_owner_remains(db, membership, next_role, next_status)
     membership.role_code = next_role
     membership.status = next_status
@@ -207,10 +231,12 @@ def update_member(
 @router.patch("/memberships/{membership_id}/response", response_model=OrganizationMemberResponse)
 def respond_membership_invitation(
     membership_id: str,
-    body: MembershipInvitationResponseRequest,
+    body: MemberUpdateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if body.status not in ("active", "disabled"):
+        raise HTTPException(status_code=400, detail="邀请响应只能是 active 或 disabled")
     membership = (
         db.query(Membership)
         .filter(
@@ -221,11 +247,23 @@ def respond_membership_invitation(
     )
     if membership is None:
         raise HTTPException(status_code=404, detail="邀请不存在")
-    if membership.status != MembershipStatus.invited:
-        raise HTTPException(status_code=409, detail="邀请已处理")
+    if membership.organization.status != OrganizationStatus.active:
+        raise HTTPException(status_code=409, detail="组织不可用")
+    if membership.status not in (MembershipStatus.invited, MembershipStatus.active):
+        raise HTTPException(status_code=409, detail="邀请已关闭")
 
-    membership.status = MembershipStatus(body.status)
-    membership.joined_at = func.now() if membership.status == MembershipStatus.active else None
+    next_status = MembershipStatus(body.status)
+    if next_status == MembershipStatus.active:
+        other_membership = _active_membership_in_other_org(db, str(current_user.id), str(membership.org_id))
+        if other_membership is not None:
+            raise HTTPException(status_code=409, detail="需要先退出已有组织，才能加入新的组织")
+        membership.status = MembershipStatus.active
+        if membership.joined_at is None:
+            membership.joined_at = func.now()
+    else:
+        _ensure_owner_remains(db, membership, membership.role_code, MembershipStatus.disabled)
+        membership.status = MembershipStatus.disabled
+
     db.commit()
     db.refresh(membership)
     return _member_response(membership)

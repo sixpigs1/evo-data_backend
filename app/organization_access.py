@@ -28,7 +28,7 @@ def active_memberships(db: Session, user: User) -> list[Membership]:
     )
 
 
-def account_memberships(db: Session, user: User) -> list[Membership]:
+def visible_memberships(db: Session, user: User) -> list[Membership]:
     return (
         db.query(Membership)
         .join(Organization)

@@ -224,19 +224,13 @@ class OrganizationInfo(BaseModel):
     status: str
 
 
-class MembershipInviterInfo(BaseModel):
-    id: str
-    phone: str
-    nickname: Optional[str] = None
-
-
 class MembershipInfo(BaseModel):
     id: str
     org_id: str
     role_code: Literal["owner", "admin", "member"]
     status: str
     invited_by_user_id: Optional[str] = None
-    invited_by_user: Optional[MembershipInviterInfo] = None
+    invited_by_user: Optional[dict[str, Optional[str]]] = None
     organization: OrganizationInfo
 
 

@@ -22,7 +22,7 @@ from app.config import settings
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import User, UserStatus
-from app.organization_access import account_memberships
+from app.organization_access import visible_memberships
 from app.schemas import (
     CaptchaResponse,
     ChangePhoneRequest,
@@ -54,20 +54,18 @@ def _enum_value(value):
 
 
 def _membership_payload(membership):
-    invited_by_user = None
-    if membership.inviter is not None:
-        invited_by_user = {
-            "id": str(membership.inviter.id),
-            "phone": membership.inviter.phone,
-            "nickname": membership.inviter.nickname,
-        }
+    inviter = membership.inviter
     return {
         "id": str(membership.id),
         "org_id": str(membership.org_id),
         "role_code": _enum_value(membership.role_code),
         "status": _enum_value(membership.status),
         "invited_by_user_id": str(membership.invited_by_user_id) if membership.invited_by_user_id else None,
-        "invited_by_user": invited_by_user,
+        "invited_by_user": {
+            "id": str(inviter.id),
+            "phone": inviter.phone,
+            "nickname": inviter.nickname,
+        } if inviter else None,
         "organization": {
             "id": str(membership.organization.id),
             "name": membership.organization.name,
@@ -77,15 +75,15 @@ def _membership_payload(membership):
 
 
 def _user_info(user: User, db: Session) -> UserInfo:
-    memberships = [_membership_payload(item) for item in account_memberships(db, user)]
-    active = [item for item in memberships if item["status"] == "active"]
+    memberships = [_membership_payload(item) for item in visible_memberships(db, user)]
+    current_membership = next((item for item in memberships if item["status"] == "active"), None)
     return UserInfo(
         id=str(user.id),
         phone=user.phone,
         nickname=user.nickname,
         status=_enum_value(user.status),
         memberships=memberships,
-        current_membership=active[0] if active else None,
+        current_membership=current_membership,
         has_password=user.has_password,
         created_at=user.created_at,
     )
