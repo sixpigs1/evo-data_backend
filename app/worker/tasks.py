@@ -4,6 +4,7 @@ Celery 任务定义
 import json
 import logging
 import uuid
+from datetime import datetime
 
 from celery import Celery
 
@@ -43,6 +44,8 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
     from app.datasets.validator import FormatVersion, validate_dataset
     from app.models import (
         Contribution,
+        CollectionRunUpload,
+        CollectionRunUploadStatus,
         Dataset,
         DatasetVersion,
         Upload,
@@ -58,6 +61,12 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
 
         # 更新状态为校验中
         upload.status = UploadStatus.validating
+        collection_upload = db.query(CollectionRunUpload).filter(
+            CollectionRunUpload.upload_id == upload_id,
+        ).first()
+        if collection_upload:
+            collection_upload.status = CollectionRunUploadStatus.validating
+            collection_upload.error_message = None
         db.commit()
 
         # 执行校验
@@ -112,6 +121,10 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
                 logger.info(f"Upload {upload_id}: 新建 dataset {dataset.id}")
 
             upload.status = UploadStatus.passed
+            if collection_upload:
+                collection_upload.status = CollectionRunUploadStatus.passed
+                collection_upload.error_message = None
+                collection_upload.completed_at = collection_upload.completed_at or datetime.utcnow()
 
             # 创建 Contribution 记录
             contribution = Contribution(
@@ -131,6 +144,10 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
         else:
             upload.status = UploadStatus.failed
             upload.error_message = "; ".join(result.errors)
+            if collection_upload:
+                collection_upload.status = CollectionRunUploadStatus.failed
+                collection_upload.error_message = upload.error_message
+                collection_upload.completed_at = collection_upload.completed_at or datetime.utcnow()
             db.commit()
             logger.warning(f"Upload {upload_id} validation failed: {result.errors}")
 
@@ -141,6 +158,13 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
             if upload:
                 upload.status = UploadStatus.failed
                 upload.error_message = f"内部错误: {str(e)}"
+                collection_upload = db.query(CollectionRunUpload).filter(
+                    CollectionRunUpload.upload_id == upload_id,
+                ).first()
+                if collection_upload:
+                    collection_upload.status = CollectionRunUploadStatus.failed
+                    collection_upload.error_message = upload.error_message
+                    collection_upload.completed_at = collection_upload.completed_at or datetime.utcnow()
                 db.commit()
         except Exception:
             pass

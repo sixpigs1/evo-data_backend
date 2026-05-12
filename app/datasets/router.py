@@ -10,9 +10,10 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.collection.oss_paths import collection_run_raw_oss_path
 from app.database import get_db
 from app.deps import get_current_user, get_optional_user
-from app.models import Contribution, Dataset, PlatformRole, Upload, UploadStatus, User
+from app.models import CollectionRun, Contribution, Dataset, PlatformRole, Upload, UploadStatus, User
 from app.schemas import (
     DatasetDetail,
     DatasetListItem,
@@ -149,9 +150,8 @@ def complete_upload(
     db: Session = Depends(get_db),
 ):
     """用户上传完成后通知后端，触发校验任务"""
-    # 验证 oss_path 属于当前用户
-    expected_prefix = f"user_uploads/{current_user.id}/"
-    if not body.oss_path.startswith(expected_prefix):
+    # 验证 oss_path 属于当前用户，或属于当前用户的 collection run。
+    if not _is_authorized_upload_path(body.oss_path, body.upload_id, current_user, db):
         raise HTTPException(status_code=403, detail="无权访问此上传路径")
 
     upload = Upload(
@@ -172,6 +172,26 @@ def complete_upload(
         upload_id=str(upload.id),
         status=upload.status.value,
     )
+
+
+def _is_authorized_upload_path(
+    oss_path: str,
+    upload_id: str | None,
+    current_user: User,
+    db: Session,
+) -> bool:
+    expected_prefix = f"user_uploads/{current_user.id}/"
+    if oss_path.startswith(expected_prefix):
+        return True
+    if not upload_id:
+        return False
+    run = db.query(CollectionRun).filter(
+        CollectionRun.id == upload_id,
+        CollectionRun.user_id == current_user.id,
+    ).first()
+    if run is None:
+        return False
+    return oss_path == collection_run_raw_oss_path(run, settings.OSS_ENV_PREFIX)
 
 
 # ─── 查询上传状态 ─────────────────────────────────────────────────────────────

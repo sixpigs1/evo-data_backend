@@ -63,6 +63,15 @@ class CollectionRunStatus(str, enum.Enum):
     failed = "failed"
 
 
+class CollectionRunUploadStatus(str, enum.Enum):
+    pending = "pending"
+    uploading = "uploading"
+    uploaded = "uploaded"
+    validating = "validating"
+    passed = "passed"
+    failed = "failed"
+
+
 # ─── Users ────────────────────────────────────────────────────────────────────
 
 class User(Base):
@@ -304,3 +313,41 @@ class CollectionRun(Base):
     user = relationship("User", back_populates="collection_runs")
     assignment = relationship("CollectionAssignment", back_populates="runs")
     task = relationship("CollectionTask", back_populates="runs")
+    upload = relationship(
+        "CollectionRunUpload",
+        back_populates="run",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class CollectionRunUpload(Base):
+    __tablename__ = "collection_run_uploads"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_collection_run_uploads_run_id"),
+        Index("ix_collection_run_uploads_status", "status"),
+        Index("ix_collection_run_uploads_upload_id", "upload_id"),
+    )
+
+    id = Column(CHAR(36), primary_key=True, default=new_uuid)
+    run_id = Column(CHAR(36), ForeignKey("collection_runs.id", ondelete="CASCADE"), nullable=False)
+    upload_id = Column(CHAR(36), nullable=True)
+    oss_path = Column(String(1024), nullable=True)
+    status = Column(
+        Enum(CollectionRunUploadStatus, values_callable=lambda x: [e.value for e in x]),
+        default=CollectionRunUploadStatus.pending,
+        server_default=CollectionRunUploadStatus.pending.value,
+        nullable=False,
+    )
+    total_files = Column(Integer, default=0, server_default="0", nullable=False)
+    uploaded_files = Column(Integer, default=0, server_default="0", nullable=False)
+    total_bytes = Column(BigInteger, default=0, server_default="0", nullable=False)
+    uploaded_bytes = Column(BigInteger, default=0, server_default="0", nullable=False)
+    last_uploaded_path = Column(String(1024), nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    run = relationship("CollectionRun", back_populates="upload")

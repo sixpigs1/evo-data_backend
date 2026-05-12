@@ -7,10 +7,13 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.collection.oss_paths import collection_run_id_from_raw_oss_path, collection_run_raw_oss_path
+from app.database import get_db
 from app.deps import get_current_user
-from app.models import User
+from app.models import CollectionRun, User
 from app.schemas import STSCredentials
 
 router = APIRouter(prefix="/sts", tags=["sts"])
@@ -84,14 +87,14 @@ class PresignResponse(BaseModel):
 def get_presign_urls(
     body: PresignRequest,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     为每个文件生成预签名 PUT URL，前端直接 PUT 无需任何 Authorization 头。
     预签名 URL 有效期 1 小时，且每个 URL 仅能写入指定的 object key。
     """
-    # 安全校验：upload_dir 必须属于当前用户
-    expected_prefix = f"user_uploads/{current_user.id}/"
-    if not body.upload_dir.startswith(expected_prefix):
+    # 安全校验：upload_dir 必须属于当前用户，或属于当前用户的 collection run。
+    if not _is_authorized_upload_dir(body.upload_dir, current_user, db):
         raise HTTPException(status_code=403, detail="upload_dir 不属于当前用户")
 
     try:
@@ -106,7 +109,7 @@ def get_presign_urls(
         for rel_path in body.relative_paths:
             # 拼接完整 object key，并再次校验路径安全
             key = body.upload_dir + rel_path
-            if not key.startswith(expected_prefix):
+            if not key.startswith(body.upload_dir):
                 raise HTTPException(status_code=400, detail=f"非法路径: {rel_path}")
             # 生成预签名 PUT URL，有效期 3600 秒
             # 签名时指定 Content-Type，前端上传时也必须发送相同的 Content-Type
@@ -121,3 +124,24 @@ def get_presign_urls(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"预签名 URL 生成失败: {str(e)}")
+
+
+def _is_authorized_upload_dir(upload_dir: str, current_user: User, db: Session) -> bool:
+    legacy_prefix = f"user_uploads/{current_user.id}/"
+    if upload_dir.startswith(legacy_prefix):
+        return True
+
+    run_id = collection_run_id_from_raw_oss_path(
+        upload_dir,
+        settings.OSS_ENV_PREFIX,
+        str(current_user.id),
+    )
+    if run_id is None:
+        return False
+    run = db.query(CollectionRun).filter(
+        CollectionRun.id == run_id,
+        CollectionRun.user_id == current_user.id,
+    ).first()
+    if run is None:
+        return False
+    return upload_dir == collection_run_raw_oss_path(run, settings.OSS_ENV_PREFIX)

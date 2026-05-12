@@ -12,11 +12,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.collection.oss_paths import collection_run_raw_oss_path
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import (
     CollectionAssignment,
     CollectionRun,
+    CollectionRunUpload,
+    CollectionRunUploadStatus,
     CollectionRunStatus,
     CollectionTask,
     Membership,
@@ -255,6 +259,52 @@ class RunFinishRequest(RunHeartbeatRequest):
     error_message: Optional[str] = None
 
 
+class RunUploadUpdate(BaseModel):
+    upload_id: Optional[str] = None
+    oss_path: Optional[str] = None
+    status: Literal["pending", "uploading", "uploaded", "validating", "passed", "failed"]
+    total_files: Optional[int] = None
+    uploaded_files: Optional[int] = None
+    total_bytes: Optional[int] = None
+    uploaded_bytes: Optional[int] = None
+    last_uploaded_path: Optional[str] = None
+    error_message: Optional[str] = None
+
+    @field_validator("total_files", "uploaded_files", "total_bytes", "uploaded_bytes")
+    @classmethod
+    def validate_non_negative_count(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value < 0:
+            raise ValueError("不得小于 0")
+        return value
+
+
+class RunUploadResponse(BaseModel):
+    id: str
+    run_id: str
+    upload_id: Optional[str] = None
+    oss_path: Optional[str] = None
+    status: str
+    total_files: int
+    uploaded_files: int
+    total_bytes: int
+    uploaded_bytes: int
+    last_uploaded_path: Optional[str] = None
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class RunUploadSessionResponse(BaseModel):
+    upload_id: str
+    upload_dir: str
+    bucket: str
+    endpoint: str
+
+
 class RunResponse(BaseModel):
     id: str
     org_id: str
@@ -272,6 +322,7 @@ class RunResponse(BaseModel):
     metadata: Optional[dict[str, Any]] = None
     client_info: Optional[dict[str, Any]] = None
     task_params: Optional[dict[str, Any]] = None
+    upload: Optional[RunUploadResponse] = None
 
     model_config = {"from_attributes": True}
 
@@ -323,6 +374,27 @@ def _run_response(run: CollectionRun) -> RunResponse:
         metadata=_json_loads(run.metadata_json),
         client_info=_json_loads(run.client_info_json),
         task_params=_task_payload(run.task) if run.task else None,
+        upload=_run_upload_response(run.upload) if getattr(run, "upload", None) else None,
+    )
+
+
+def _run_upload_response(upload: CollectionRunUpload) -> RunUploadResponse:
+    return RunUploadResponse(
+        id=str(upload.id),
+        run_id=str(upload.run_id),
+        upload_id=str(upload.upload_id) if upload.upload_id else None,
+        oss_path=upload.oss_path,
+        status=upload.status.value if hasattr(upload.status, "value") else str(upload.status),
+        total_files=upload.total_files,
+        uploaded_files=upload.uploaded_files,
+        total_bytes=upload.total_bytes,
+        uploaded_bytes=upload.uploaded_bytes,
+        last_uploaded_path=upload.last_uploaded_path,
+        error_message=upload.error_message,
+        started_at=upload.started_at,
+        completed_at=upload.completed_at,
+        created_at=upload.created_at,
+        updated_at=upload.updated_at,
     )
 
 
@@ -354,6 +426,56 @@ def _require_startable_assignment(
     if not assignment.task.is_active:
         raise HTTPException(status_code=409, detail="该任务已停用")
     return assignment
+
+
+def _optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _apply_run_upload_update(upload: CollectionRunUpload, body: RunUploadUpdate) -> None:
+    payload = body.model_dump(exclude_unset=True)
+    status = CollectionRunUploadStatus(payload["status"])
+    upload.status = status
+
+    text_fields = ("upload_id", "oss_path", "last_uploaded_path", "error_message")
+    for field_name in text_fields:
+        if field_name in payload:
+            setattr(upload, field_name, _optional_text(payload[field_name]))
+
+    count_fields = ("total_files", "uploaded_files", "total_bytes", "uploaded_bytes")
+    for field_name in count_fields:
+        if field_name in payload:
+            setattr(upload, field_name, payload[field_name])
+
+    if upload.total_files and upload.uploaded_files > upload.total_files:
+        raise HTTPException(status_code=422, detail="uploaded_files 不能大于 total_files")
+    if upload.total_bytes and upload.uploaded_bytes > upload.total_bytes:
+        raise HTTPException(status_code=422, detail="uploaded_bytes 不能大于 total_bytes")
+
+    now = datetime.utcnow()
+    if status != CollectionRunUploadStatus.pending and upload.started_at is None:
+        upload.started_at = now
+    if status in (
+        CollectionRunUploadStatus.uploaded,
+        CollectionRunUploadStatus.passed,
+        CollectionRunUploadStatus.failed,
+    ) and upload.completed_at is None:
+        upload.completed_at = now
+    if status != CollectionRunUploadStatus.failed and "error_message" not in payload:
+        upload.error_message = None
+
+
+def _ensure_run_upload(run: CollectionRun, db: Session) -> CollectionRunUpload:
+    upload = db.query(CollectionRunUpload).filter(CollectionRunUpload.run_id == run.id).first()
+    if upload is None:
+        upload = CollectionRunUpload(run_id=run.id)
+        db.add(upload)
+    upload.upload_id = str(run.id)
+    upload.oss_path = collection_run_raw_oss_path(run, settings.OSS_ENV_PREFIX)
+    return upload
 
 
 @router.get("/today", response_model=CollectionTodayResponse)
@@ -490,6 +612,87 @@ def finish_run(
     db.commit()
     db.refresh(run)
     return _run_response(run)
+
+
+@router.post("/runs/{run_id}/upload/session", response_model=RunUploadSessionResponse)
+def create_run_upload_session(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    run = (
+        db.query(CollectionRun)
+        .filter(
+            CollectionRun.id == run_id,
+            CollectionRun.user_id == current_user.id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="采集记录不存在")
+
+    upload = _ensure_run_upload(run, db)
+    if upload.status == CollectionRunUploadStatus.failed:
+        upload.status = CollectionRunUploadStatus.pending
+        upload.error_message = None
+    db.commit()
+    db.refresh(upload)
+    return RunUploadSessionResponse(
+        upload_id=str(run.id),
+        upload_dir=str(upload.oss_path),
+        bucket=settings.OSS_BUCKET_NAME,
+        endpoint=getattr(settings, "OSS_PUBLIC_ENDPOINT", settings.OSS_ENDPOINT),
+    )
+
+
+@router.put("/runs/{run_id}/upload", response_model=RunUploadResponse)
+def upsert_run_upload(
+    run_id: str,
+    body: RunUploadUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    run = (
+        db.query(CollectionRun)
+        .filter(
+            CollectionRun.id == run_id,
+            CollectionRun.user_id == current_user.id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="采集记录不存在")
+
+    upload = _ensure_run_upload(run, db)
+    _apply_run_upload_update(upload, body)
+    upload.upload_id = str(run.id)
+    upload.oss_path = collection_run_raw_oss_path(run, settings.OSS_ENV_PREFIX)
+    db.commit()
+    db.refresh(upload)
+    return _run_upload_response(upload)
+
+
+@router.get("/runs/{run_id}/upload", response_model=RunUploadResponse)
+def get_run_upload(
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    run = (
+        db.query(CollectionRun)
+        .filter(
+            CollectionRun.id == run_id,
+            CollectionRun.user_id == current_user.id,
+        )
+        .first()
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="采集记录不存在")
+    if run.upload is None:
+        raise HTTPException(status_code=404, detail="采集上传记录不存在")
+    return _run_upload_response(run.upload)
 
 
 def _update_run_metrics(run: CollectionRun, body: RunHeartbeatRequest) -> None:
