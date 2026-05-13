@@ -261,48 +261,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_remote_training_jobs_user_task_status", table_name="remote_training_jobs")
-    op.drop_index("ix_remote_training_jobs_account_status", table_name="remote_training_jobs")
-    op.drop_index("ix_remote_training_jobs_user_id", table_name="remote_training_jobs")
-    op.drop_index("ix_remote_training_jobs_org_id", table_name="remote_training_jobs")
-    op.drop_index("ix_remote_training_jobs_account_id", table_name="remote_training_jobs")
+    op.execute("SET FOREIGN_KEY_CHECKS=0")
     op.drop_table("remote_training_jobs")
-
-    op.drop_index("ix_dataset_purchase_grants_org", table_name="dataset_purchase_grants")
-    op.drop_index("ix_dataset_purchase_grants_user", table_name="dataset_purchase_grants")
     op.drop_table("dataset_purchase_grants")
-
-    op.drop_index("ix_dataset_prices_status", table_name="dataset_prices")
     op.drop_table("dataset_prices")
     op.drop_table("credit_price_rules")
-
-    op.drop_index("ix_resource_usage_resource", table_name="resource_usage_records")
-    op.drop_index("ix_resource_usage_account_status", table_name="resource_usage_records")
-    op.drop_index("ix_resource_usage_records_user_id", table_name="resource_usage_records")
-    op.drop_index("ix_resource_usage_records_org_id", table_name="resource_usage_records")
-    op.drop_index("ix_resource_usage_records_account_id", table_name="resource_usage_records")
     op.drop_table("resource_usage_records")
-
-    op.drop_index("ix_upload_reward_grants_account_status", table_name="upload_reward_grants")
-    op.drop_index("ix_upload_reward_grants_account_id", table_name="upload_reward_grants")
     op.drop_table("upload_reward_grants")
-
-    op.drop_index("ix_payment_orders_account_status", table_name="payment_orders")
-    op.drop_index("ix_payment_orders_account_id", table_name="payment_orders")
     op.drop_table("payment_orders")
-
-    op.drop_index("ix_recharge_packages_type_active", table_name="recharge_packages")
     op.drop_table("recharge_packages")
-
-    op.drop_index("ix_credit_ledger_source", table_name="credit_ledger_entries")
-    op.drop_index("ix_credit_ledger_account_created", table_name="credit_ledger_entries")
-    op.drop_index("ix_credit_ledger_entries_account_id", table_name="credit_ledger_entries")
     op.drop_table("credit_ledger_entries")
-
-    op.drop_index("ix_credit_accounts_org_user", table_name="credit_accounts")
-    op.drop_index("ix_credit_accounts_user_id", table_name="credit_accounts")
-    op.drop_index("ix_credit_accounts_org_id", table_name="credit_accounts")
     op.drop_table("credit_accounts")
+    op.execute("SET FOREIGN_KEY_CHECKS=1")
 
 
 def _seed_packages() -> None:
