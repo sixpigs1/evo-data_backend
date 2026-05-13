@@ -339,7 +339,7 @@ def _backfill_personal_accounts() -> None:
             "INSERT INTO credit_ledger_entries "
             "(id, account_id, entry_type, available_delta, held_delta, available_balance_after, held_balance_after, source_type, source_id, created_at) "
             f"SELECT UUID(), credit_accounts.id, 'initial_grant', 100, 0, 100, 0, 'system_initial_grant', "
-            f"CONCAT('existing:', credit_accounts.user_id, ':{account_type}'), NOW() "
+            f"CONCAT('existing-', credit_accounts.user_id, '-{account_type}'), NOW() "
             "FROM credit_accounts "
             f"WHERE credit_accounts.account_type = '{account_type}' AND credit_accounts.org_scope_key = '__personal__'"
         )
