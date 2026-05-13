@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # 用于签名给浏览器的公网 URL（不能使用 internal 内网域名）
     OSS_PUBLIC_ENDPOINT: str = "https://oss-cn-hangzhou.aliyuncs.com"
     OSS_BUCKET_DOMAIN: str = ""
-    OSS_ENV_PREFIX: str = "prod"
+    OSS_ENV_PREFIX: str = "dev"
 
     # STS
     STS_ROLE_ARN: str = ""

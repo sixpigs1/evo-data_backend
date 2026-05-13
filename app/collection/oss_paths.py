@@ -11,7 +11,7 @@ def collection_run_raw_oss_path(run: Any, env_prefix: str) -> str:
     env = oss_path_segment(env_prefix)
     return (
         f"{env}/orgs/{run.org_id}/users/{run.user_id}/"
-        f"collection-runs/{run.id}/raw/{dataset_slug}/"
+        f"raw/collection-runs/{run.id}/{dataset_slug}/"
     )
 
 
@@ -22,9 +22,9 @@ def collection_run_id_from_raw_oss_path(upload_dir: str, env_prefix: str, user_i
         return None
     if parts[0] != env or parts[1] != "orgs" or parts[3] != "users":
         return None
-    if parts[4] != str(user_id) or parts[5] != "collection-runs" or parts[7] != "raw":
+    if parts[4] != str(user_id) or parts[5] != "raw" or parts[6] != "collection-runs":
         return None
-    return parts[6]
+    return parts[7]
 
 
 def oss_path_segment(value: str) -> str:
