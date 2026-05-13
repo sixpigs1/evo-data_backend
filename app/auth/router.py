@@ -19,6 +19,7 @@ from app.auth.utils import (
     hash_password,
 )
 from app.config import settings
+from app.credits.service import ensure_user_initial_accounts
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import User, UserStatus
@@ -164,11 +165,13 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
     if not user:
         user = User(phone=body.phone)
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        db.flush()
 
     if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="账号已被禁用")
+    ensure_user_initial_accounts(db, user)
+    db.commit()
+    db.refresh(user)
 
     access_token = create_access_token(str(user.id))
     refresh_token = create_refresh_token(str(user.id))
@@ -224,6 +227,8 @@ def login_with_password(body: PasswordLoginRequest, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail="密码错误")
     if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="账号已被禁用")
+    ensure_user_initial_accounts(db, user)
+    db.commit()
 
     access_token = create_access_token(str(user.id))
     refresh_token = create_refresh_token(str(user.id))

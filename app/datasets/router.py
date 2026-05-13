@@ -7,13 +7,15 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.collection.oss_paths import collection_run_raw_oss_path
+from app.credits.service import CreditError, active_dataset_price, has_dataset_access, purchase_dataset, require_account_access
 from app.database import get_db
 from app.deps import get_current_user, get_optional_user
-from app.models import CollectionRun, Contribution, Dataset, PlatformRole, Upload, UploadStatus, User
+from app.models import CollectionRun, CreditAccountType, Contribution, Dataset, PlatformRole, Upload, UploadStatus, User
 from app.schemas import (
     DatasetDetail,
     DatasetListItem,
@@ -27,6 +29,17 @@ from app.schemas import (
 from app.worker.tasks import validate_dataset_task
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
+
+
+class DatasetPurchaseRequest(BaseModel):
+    account_id: str
+
+
+class DatasetPurchaseResponse(BaseModel):
+    dataset_id: str
+    account_id: str
+    grant_id: str
+    status: str
 
 
 def _mask_phone(phone: str) -> str:
@@ -97,6 +110,7 @@ def list_datasets(
     tag: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
+    current_user: Optional[User] = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     q = db.query(Dataset).filter(Dataset.is_public == True)
@@ -113,6 +127,7 @@ def list_datasets(
     for d in datasets:
         item = DatasetListItem.model_validate(d)
         item.owner_phone = _mask_phone(d.owner.phone) if d.owner else None
+        _attach_purchase_fields(item, d, db, current_user)
         result.append(item)
     return result
 
@@ -133,12 +148,45 @@ def get_dataset(
 
     detail = DatasetDetail.model_validate(d)
     detail.owner_phone = _mask_phone(d.owner.phone) if d.owner else None
+    _attach_purchase_fields(detail, d, db, current_user)
 
-    # 仅登录用户且有贡献时才返回 oss_path（用于下载签名）
-    if not current_user or not _has_valid_contribution(current_user, db):
+    # 仅有访问授权时才返回 oss_path（用于下载签名）。
+    if not has_dataset_access(db, dataset=d, user=current_user):
         detail.oss_path = None
 
     return detail
+
+
+@router.post("/{dataset_id}/purchase", response_model=DatasetPurchaseResponse)
+def purchase_dataset_access(
+    dataset_id: str,
+    body: DatasetPurchaseRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    if not dataset.is_public and str(dataset.owner_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="无权购买此数据集")
+    try:
+        account = require_account_access(
+            db,
+            account_id=body.account_id,
+            user=current_user,
+            account_type=CreditAccountType.data,
+        )
+        grant = purchase_dataset(db, dataset=dataset, account=account, user=current_user)
+    except CreditError as exc:
+        raise exc.to_http() from exc
+    db.commit()
+    db.refresh(grant)
+    return DatasetPurchaseResponse(
+        dataset_id=str(dataset.id),
+        account_id=str(account.id),
+        grant_id=str(grant.id),
+        status=_enum_value(grant.status),
+    )
 
 
 # ─── 完成上传 ─────────────────────────────────────────────────────────────────
@@ -239,14 +287,8 @@ def get_download_url(
     is_admin = current_user.platform_role == PlatformRole.system_admin
 
     if not is_owner and not is_admin:
-        # 普通用户需要有贡献才能下载公开数据集
-        if not d.is_public:
-            raise HTTPException(status_code=403, detail="无权访问此数据集")
-        if not _has_valid_contribution(current_user, db):
-            raise HTTPException(
-                status_code=403,
-                detail="需要先贡献至少一个有效数据集才能下载",
-            )
+        if not d.is_public or not has_dataset_access(db, dataset=d, user=current_user):
+            raise HTTPException(status_code=403, detail="需要先购买此数据集")
 
     if not d.oss_path:
         raise HTTPException(status_code=404, detail="数据集文件不可用")
@@ -366,6 +408,7 @@ def my_datasets(
     for d in datasets:
         item = DatasetListItem.model_validate(d)
         item.owner_phone = _mask_phone(d.owner.phone) if d.owner else None
+        _attach_purchase_fields(item, d, db, current_user)
         result.append(item)
     return result
 
@@ -433,6 +476,7 @@ def admin_list_all_datasets(
     for d in datasets:
         item = DatasetListItem.model_validate(d)
         item.owner_phone = _mask_phone(d.owner.phone) if d.owner else None
+        _attach_purchase_fields(item, d, db, current_user)
         # 填充最新的关联 upload ID（仅 admin 接口）
         latest_upload = (
             db.query(Upload)
@@ -443,3 +487,18 @@ def admin_list_all_datasets(
         item.upload_id = str(latest_upload.id) if latest_upload else None
         result.append(item)
     return result
+
+
+def _attach_purchase_fields(
+    item: DatasetListItem,
+    dataset: Dataset,
+    db: Session,
+    current_user: Optional[User],
+) -> None:
+    price = active_dataset_price(db, str(dataset.id))
+    item.price_credit = int(price.credit_amount) if price else None
+    item.has_access = has_dataset_access(db, dataset=dataset, user=current_user)
+
+
+def _enum_value(value) -> str:
+    return value.value if hasattr(value, "value") else str(value)

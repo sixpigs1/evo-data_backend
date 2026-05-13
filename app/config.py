@@ -63,5 +63,27 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
+    # Credits / payments
+    PAYMENT_MOCK_MODE: bool = True
+    PAYMENT_NOTIFY_BASE_URL: str = ""
+    WECHAT_PAY_APPID: str = ""
+    WECHAT_PAY_MCHID: str = ""
+    WECHAT_PAY_MERCHANT_SERIAL_NO: str = ""
+    WECHAT_PAY_MERCHANT_PRIVATE_KEY: str = ""
+    WECHAT_PAY_MERCHANT_PRIVATE_KEY_PATH: str = ""
+    WECHAT_PAY_API_V3_KEY: str = ""
+    WECHAT_PAY_PLATFORM_CERT: str = ""
+    WECHAT_PAY_PLATFORM_CERT_PATH: str = ""
+    ALIPAY_APP_ID: str = ""
+    ALIPAY_PRIVATE_KEY: str = ""
+    ALIPAY_PRIVATE_KEY_PATH: str = ""
+    ALIPAY_PUBLIC_KEY: str = ""
+    ALIPAY_PUBLIC_KEY_PATH: str = ""
+    ALIPAY_GATEWAY: str = "https://openapi.alipay.com/gateway.do"
+
+    # Remote training
+    REMOTE_TRAINING_HOST: str = "8.136.130.234"
+    REMOTE_TRAINING_PORT: int = 9000
+
 
 settings = Settings()

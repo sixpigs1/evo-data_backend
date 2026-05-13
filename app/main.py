@@ -7,10 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.auth.router import router as auth_router
 from app.collection.router import router as collection_router
 from app.config import settings
+from app.credits.router import payments_router, router as credits_router
 from app.database import Base, engine
 from app.datasets.router import router as datasets_router
 from app.organizations.router import router as organizations_router
 from app.sts.router import router as sts_router
+from app.training.router import router as training_router
 
 # 创建所有数据库表（生产环境建议使用 alembic migrate）
 Base.metadata.create_all(bind=engine)
@@ -38,6 +40,9 @@ app.include_router(organizations_router)
 app.include_router(collection_router)
 app.include_router(datasets_router)
 app.include_router(sts_router)
+app.include_router(credits_router)
+app.include_router(payments_router)
+app.include_router(training_router)
 
 
 @app.get("/health")

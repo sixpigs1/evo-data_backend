@@ -41,6 +41,7 @@ celery_app.conf.update(
 def validate_dataset_task(self, upload_id: str, description: str = None, tags: str = None, is_public: bool = False):
     """异步校验上传的数据集格式"""
     from app.database import SessionLocal
+    from app.credits.service import reward_upload
     from app.datasets.validator import FormatVersion, validate_dataset
     from app.models import (
         Contribution,
@@ -134,6 +135,7 @@ def validate_dataset_task(self, upload_id: str, description: str = None, tags: s
                 status=UploadStatus.passed,
             )
             db.add(contribution)
+            reward_upload(db, upload=upload, dataset=dataset)
 
             db.commit()
             logger.info(f"Upload {upload_id} validated successfully, dataset {dataset.id}")
